@@ -35,15 +35,27 @@ def lade(pfad):
     return trimesh.load_mesh(pfad, force="mesh")
 
 
+VERBINDER_ARTEN = {"duebel": "Dübel", "zapfen": "Zapfen", "magnet": "Magnete"}
+
+
 @dataclass
 class Duebel:
-    """Einstellungen für Dübel-Verzapfung an jeder Schnittfläche."""
-    anzahl: int = 2          # Dübel pro Schnittfläche
+    """Einstellungen für die Verbinder an jeder Schnittfläche.
+
+    art "duebel": Löcher in beiden Hälften, Dübel als eigenes Teil. tiefe = Lochtiefe je Seite.
+    art "zapfen": Zapfen an einer Hälfte angeformt, Loch in der anderen. tiefe = Zapfenlänge.
+    art "magnet": Löcher in beiden Hälften für Scheibenmagnete. tiefe = Magnethöhe.
+    """
+    anzahl: int = 2          # Verbinder pro Schnittfläche
     durchmesser: float = 6.0
-    tiefe: float = 10.0      # Lochtiefe pro Seite
+    tiefe: float = 10.0
     spiel: float = 0.2       # Loch ist um so viel größer (Durchmesser)
     randabstand: float = 3.0 # Mindestwand zwischen Loch und Außenkante
     drucken: bool = True     # Dübel als eigene Teile mit ausgeben
+    art: str = "duebel"
+
+
+Verbinder = Duebel
 
 
 def duebel_positionen(flaeche, d: Duebel):
@@ -139,34 +151,29 @@ def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = No
     if not any(i[2] for i in inseln):
         return [mesh], 0
 
-    loecher = []
+    mitten = []
     if duebel and duebel.anzahl > 0:
         for flaeche, _, gewaehlt in inseln:
             if not gewaehlt:
                 continue
             punkte = duebel_positionen(flaeche, duebel)
             if not punkte and log:
-                log(f"  Schnittfläche zu klein für Dübel ({flaeche.area:.0f} mm²)")
-            for mitte in zu_3d(punkte) if punkte else []:
-                zyl = trimesh.creation.cylinder(
-                    radius=(duebel.durchmesser + duebel.spiel) / 2,
-                    height=2 * (duebel.tiefe + 0.5),
-                    sections=32,
-                )
-                zyl.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal))
-                zyl.apply_translation(mitte)
-                loecher.append(zyl)
+                log(f"  Schnittfläche zu klein für Verbinder ({flaeche.area:.0f} mm²)")
+            if punkte:
+                mitten += list(zu_3d(punkte))
 
-    haelften = []
+    haelften = {}
     for seite in (-1, 1):
         t = mesh.slice_plane(origin, seite * normal, cap=True)
         if t is not None and len(t.faces):
-            if loecher:
-                t = trimesh.boolean.difference([t] + loecher, engine="manifold")
-            haelften.append((seite, t))
+            haelften[seite] = t
+
+    if mitten and len(haelften) == 2:
+        haelften = verbinder_anbringen(haelften, mitten, normal, duebel)
+    haelften = list(haelften.items())
 
     if all(i[2] for i in inseln):
-        return [t for _, t in haelften], len(loecher)
+        return [t for _, t in haelften], len(mitten)
 
     # Nur im Fenster schneiden: Stücke, die über eine nicht gewählte Insel zusammenhängen,
     # werden wieder vereinigt.
@@ -198,7 +205,43 @@ def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = No
     teile = []
     for g in gruppen.values():
         teile.append(g[0] if len(g) == 1 else trimesh.boolean.union(g, engine="manifold"))
-    return teile, len(loecher)
+    return teile, len(mitten)
+
+
+def _zylinder(radius, von, bis, normal, mitte):
+    """Zylinder entlang normal von Abstand von bis bis (mm, bezogen auf die Schnittebene)."""
+    z = trimesh.creation.cylinder(radius=radius, height=bis - von, sections=32)
+    z.apply_translation([0, 0, (von + bis) / 2])
+    z.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal))
+    z.apply_translation(mitte)
+    return z
+
+
+def _zapfen(d: Duebel, normal, mitte):
+    """Zapfen mit 0,5 mm Fase an der Spitze, 0,5 mm in die Hälfte versenkt für eine saubere Verbindung."""
+    r, f, laenge = d.durchmesser / 2, min(0.5, d.durchmesser / 4), d.tiefe
+    profil = [[0, -0.5], [r, -0.5], [r, laenge - f], [r - f, laenge], [0, laenge]]
+    z = trimesh.creation.revolve(profil, sections=48)
+    z.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal))
+    z.apply_translation(mitte)
+    return z
+
+
+def verbinder_anbringen(haelften, mitten, normal, d: Duebel):
+    """Bohrt Löcher bzw. formt Zapfen an. haelften: {-1: unten, 1: oben} relativ zur Normalen."""
+    r_loch = (d.durchmesser + d.spiel) / 2
+    if d.art == "zapfen":
+        # Zapfen an die größere Hälfte, Loch in die kleinere
+        traeger = max(haelften, key=lambda s: haelften[s].volume)
+        richtung = -traeger * normal  # zeigt aus der Schnittfläche des Trägers heraus
+        zapfen = [_zapfen(d, richtung, m) for m in mitten]
+        loecher = [_zylinder(r_loch, -0.5, d.tiefe + 0.3, richtung, m) for m in mitten]
+        haelften[traeger] = trimesh.boolean.union([haelften[traeger]] + zapfen, engine="manifold")
+        haelften[-traeger] = trimesh.boolean.difference([haelften[-traeger]] + loecher, engine="manifold")
+        return haelften
+    zusatz = 0.5 if d.art == "duebel" else 0.2
+    loecher = [_zylinder(r_loch, -(d.tiefe + zusatz), d.tiefe + zusatz, normal, m) for m in mitten]
+    return {s: trimesh.boolean.difference([t] + loecher, engine="manifold") for s, t in haelften.items()}
 
 
 def duebel_teile(anzahl, d: Duebel):
@@ -256,7 +299,9 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None):
         # Teil-Achsen der Größe nach den Bauraum-Achsen zuordnen (Teile dürfen gedreht werden)
         # und die Achse schneiden, die am weitesten übersteht
         reihenfolge = np.argsort(t.extents)
-        platz = np.array(sorted(bauraum), dtype=float) - 2 * rand
+        # Angeformte Zapfen machen ein Teil länger, dafür Platz lassen
+        zapfen = duebel.tiefe if duebel and duebel.art == "zapfen" and duebel.anzahl > 0 else 0.0
+        platz = np.array(sorted(bauraum), dtype=float) - 2 * rand - zapfen
         k = int(np.argmax(t.extents[reihenfolge] / platz))
         achse, nutzbar = int(reihenfolge[k]), platz[k]
         lo, hi = t.bounds[0][achse], t.bounds[1][achse]
@@ -353,7 +398,12 @@ def platte_lage(teil, bauraum=None):
     lagen = []
     if len(teil.facets):
         for i in np.argsort(teil.facets_area)[::-1][:5]:
-            lagen.append(trimesh.geometry.align_vectors(teil.facets_normal[i], [0, 0, -1]))
+            rot = trimesh.geometry.align_vectors(teil.facets_normal[i], [0, 0, -1])
+            # Nur wenn die Fläche danach ganz unten liegt (ein Zapfen darf nicht in die Platte ragen)
+            z_flaeche = trimesh.transform_points(teil.vertices[teil.faces[teil.facets[i][0]]], rot)[:, 2].min()
+            z_min = trimesh.transform_points(teil.convex_hull.vertices, rot)[:, 2].min()
+            if z_flaeche - z_min < 0.05:
+                lagen.append(rot)
     for v in ([0, 0, -1], [0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]):
         lagen.append(trimesh.geometry.align_vectors(v, [0, 0, -1]))
     hull = teil.convex_hull.vertices if len(teil.vertices) > 2000 else teil.vertices
@@ -410,7 +460,12 @@ def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=N
         szene.add_geometry(t, node_name=f"teil{i:02d}")
         status = "ok" if passt(t, bauraum) else "PASST NICHT"
         log(f"Teil {i:02d}: {' x '.join(f'{v:.1f}' for v in t.extents)} mm  {status}  -> {datei.name}")
-    if duebel and duebel.drucken and anzahl_duebel:
+    if duebel and duebel.art == "zapfen" and anzahl_duebel:
+        log(f"{anzahl_duebel} Zapfen {duebel.durchmesser:g} x {duebel.tiefe:g} mm angeformt")
+    elif duebel and duebel.art == "magnet" and anzahl_duebel:
+        log(f"Magnete nötig: {2 * anzahl_duebel} Stück {duebel.durchmesser:g} x {duebel.tiefe:g} mm "
+            f"(Löcher {duebel.durchmesser + duebel.spiel:g} x {duebel.tiefe + 0.2:g} mm). Polung beim Einkleben beachten!")
+    elif duebel and duebel.drucken and anzahl_duebel:
         stifte = trimesh.util.concatenate(duebel_teile(anzahl_duebel, duebel))
         datei = ordner / f"{name}_duebel_{anzahl_duebel}x.stl"
         stifte.export(datei)
@@ -433,9 +488,12 @@ def main():
     p.add_argument("--rand", type=float, default=3.0, help="Sicherheitsabstand zum Plattenrand in mm")
     p.add_argument("--schnitt", action="append", default=[], help="Manueller Schnitt, z.B. z=50")
     p.add_argument("--gitter", action="store_true", help="Automatisch als starres Gitter statt an dünnen Stellen")
-    p.add_argument("--duebel", type=int, default=2, help="Dübel pro Schnittfläche (0 = keine)")
+    p.add_argument("--verbinder", choices=list(VERBINDER_ARTEN), default="duebel",
+                   help="duebel, zapfen (angeformt) oder magnet (Löcher für Scheibenmagnete)")
+    p.add_argument("--duebel", type=int, default=2, help="Verbinder pro Schnittfläche (0 = keine)")
     p.add_argument("--duebel-durchmesser", type=float, default=6.0)
-    p.add_argument("--duebel-tiefe", type=float, default=10.0, help="Lochtiefe pro Seite in mm")
+    p.add_argument("--duebel-tiefe", type=float, default=10.0,
+                   help="Dübel: Lochtiefe je Seite, Zapfen: Zapfenlänge, Magnet: Magnethöhe (mm)")
     p.add_argument("--duebel-spiel", type=float, default=0.2, help="Loch so viel größer als der Dübel")
     p.add_argument("--keine-duebel-teile", action="store_true", help="Nur Löcher, z.B. für gekaufte Holzdübel")
     p.add_argument("--nicht-drehen", action="store_true", help="Teile nicht auf die Schnittfläche legen")
@@ -450,7 +508,8 @@ def main():
 
     duebel = None
     if a.duebel > 0:
-        duebel = Duebel(a.duebel, a.duebel_durchmesser, a.duebel_tiefe, a.duebel_spiel, drucken=not a.keine_duebel_teile)
+        duebel = Duebel(a.duebel, a.duebel_durchmesser, a.duebel_tiefe, a.duebel_spiel,
+                        drucken=not a.keine_duebel_teile, art=a.verbinder)
 
     if a.schnitt:
         teile, n = zerteile(mesh, lies_schnitte(mesh, a.schnitt), duebel, log=print)

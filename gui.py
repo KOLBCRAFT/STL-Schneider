@@ -187,8 +187,17 @@ class Fenster(QtWidgets.QMainWindow):
         m.addWidget(self.liste)
         form.addRow(self.manuell_box)
 
-        # Dübel
-        gruppe, form = self._gruppe(spalte, "Dübel")
+        # Verbinder
+        gruppe, form = self._gruppe(spalte, "Verbinder")
+        self.d_art = QtWidgets.QComboBox()
+        for art, name in kern.VERBINDER_ARTEN.items():
+            self.d_art.addItem(name, art)
+        self.d_art.currentIndexChanged.connect(self._art_gewaehlt)
+        form.addRow("Art", self.d_art)
+        self.d_art_info = QtWidgets.QLabel("")
+        self.d_art_info.setWordWrap(True)
+        self.d_art_info.setStyleSheet("color: #555;")
+        form.addRow(self.d_art_info)
         self.d_anzahl = QtWidgets.QSpinBox()
         self.d_anzahl.setRange(0, 8)
         self.d_anzahl.setValue(2)
@@ -197,11 +206,15 @@ class Fenster(QtWidgets.QMainWindow):
         self.d_spiel = self._zahl(0.2, 0, 2, 2, schritt=0.05)
         form.addRow("Anzahl pro Schnitt", self.d_anzahl)
         form.addRow("Durchmesser mm", self.d_durchmesser)
-        form.addRow("Tiefe je Seite mm", self.d_tiefe)
+        self.d_tiefe_label = QtWidgets.QLabel("Tiefe je Seite mm")
+        form.addRow(self.d_tiefe_label, self.d_tiefe)
         form.addRow("Spiel mm", self.d_spiel)
         self.d_drucken = QtWidgets.QCheckBox("Dübel mitdrucken")
         self.d_drucken.setChecked(True)
         form.addRow(self.d_drucken)
+        self._art_werte = {}  # merkt sich Maße je Art beim Umschalten
+        self._art_alt = "duebel"
+        self._art_gewaehlt()
 
         # Ansicht
         gruppe, form = self._gruppe(spalte, "Ansicht")
@@ -621,11 +634,33 @@ class Fenster(QtWidgets.QMainWindow):
         self._zeichne_schnitte()
         self.ansicht.render()
 
+    VERBINDER_VORGABEN = {"duebel": (6.0, 10.0, 0.2), "zapfen": (8.0, 8.0, 0.3), "magnet": (6.0, 3.0, 0.2)}
+    VERBINDER_TEXTE = {
+        "duebel": ("Tiefe je Seite mm", "Löcher in beiden Hälften, die Dübel werden extra gedruckt."),
+        "zapfen": ("Zapfenlänge mm", "Zapfen an der größeren Hälfte angeformt, passendes Loch in der anderen. "
+                                    "Kein Extrateil, aber diese Hälfte kann nicht auf der Schnittfläche liegen."),
+        "magnet": ("Magnethöhe mm", "Löcher für Scheibenmagnete (Durchmesser × Höhe des Magneten) in beiden Hälften. "
+                                   "Magnete einkleben und auf die Polung achten."),
+    }
+
+    def _art_gewaehlt(self, *_):
+        art = self.d_art.currentData()
+        self._art_werte[self._art_alt] = (self.d_durchmesser.value(), self.d_tiefe.value(), self.d_spiel.value())
+        werte = self._art_werte.get(art, self.VERBINDER_VORGABEN[art])
+        for feld, w in zip((self.d_durchmesser, self.d_tiefe, self.d_spiel), werte):
+            feld.setValue(w)
+        self._art_alt = art
+        label, info = self.VERBINDER_TEXTE[art]
+        self.d_tiefe_label.setText(label)
+        self.d_art_info.setText(info)
+        self.d_drucken.setVisible(art == "duebel")
+
     def _einstellungen(self):
         duebel = None
         if self.d_anzahl.value() > 0:
             duebel = kern.Duebel(self.d_anzahl.value(), self.d_durchmesser.value(), self.d_tiefe.value(),
-                                 self.d_spiel.value(), drucken=self.d_drucken.isChecked())
+                                 self.d_spiel.value(), drucken=self.d_drucken.isChecked(),
+                                 art=self.d_art.currentData())
         return dict(auto=self.auto.isChecked(), schnitte=list(self.schnitte),
                     bauraum=[f.value() for f in self.bauraum], duebel=duebel)
 
@@ -664,7 +699,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.ergebnis = ergebnis
         self._knoepfe()
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
-        self._log(f"{len(teile)} Teile, {n} Dübel. {passt} von {len(teile)} passen auf die Platte. "
+        self._log(f"{len(teile)} Teile, {n} Verbinder. {passt} von {len(teile)} passen auf die Platte. "
                   "Mit „Speichern …“ ausgeben.")
         self.lagen = {}
         self.huellen = [t.convex_hull.vertices if len(t.vertices) > 2000 else t.vertices for t in teile]
@@ -824,6 +859,7 @@ class Fenster(QtWidgets.QMainWindow):
     def _speichern(self, ordner=None):
         if self.ergebnis is None:
             return
+        gewaehlt = not ordner
         if not ordner:
             ordner = QtWidgets.QFileDialog.getExistingDirectory(self, "Ausgabeordner wählen", str(self.pfad.parent))
         if not ordner:
@@ -840,12 +876,44 @@ class Fenster(QtWidgets.QMainWindow):
             return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
-        if hasattr(os, "startfile"):
+        if gewaehlt and hasattr(os, "startfile"):
             os.startfile(ziel)
+
+
+def selbsttest(app):
+    """Kompletter Durchlauf ohne Klicks, z.B. um die fertige .exe zu prüfen: --selbsttest"""
+    import tempfile
+
+    import trimesh
+
+    with tempfile.TemporaryDirectory() as ordner:
+        modell = Path(ordner) / "zylinder.stl"
+        trimesh.creation.cylinder(radius=60, height=500).export(modell)
+        f = Fenster()
+        f.show()
+        f._oeffnen(str(modell))
+        ergebnisse = []
+        f.signale.fertig.disconnect()
+        f.signale.fertig.connect(ergebnisse.append)
+        f._arbeite(f._einstellungen())
+        app.processEvents()
+        if not ergebnisse:
+            print("Selbsttest: Berechnung fehlgeschlagen")
+            return 1
+        f._berechnet(ergebnisse[0])
+        f.teile_liste.setCurrentRow(0)
+        f._in_bauraum()
+        f._speichern(ordner)
+        dateien = sorted(p.name for p in (Path(ordner) / "zylinder_teile").iterdir())
+        print("Selbsttest:", ", ".join(dateien))
+        f.close()
+        return 0 if "zylinder_teile.3mf" in dateien and len(dateien) == 4 else 1
 
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    if "--selbsttest" in sys.argv:
+        sys.exit(selbsttest(app))
     fenster = Fenster()
     fenster.show()
     if len(sys.argv) > 1:
