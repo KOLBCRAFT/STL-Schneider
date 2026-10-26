@@ -18,8 +18,15 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
 
 ## Bedienung
 
-- **Modell öffnen**: STL, 3MF oder OBJ. Das Modell erscheint in der 3D-Ansicht, der grüne Rahmen
-  ist der Bauraum.
+Links führen fünf Reiter durch die Arbeit: **1 Modell → 2 Schneiden → 3 Verbinder → 4 Teile → 5 Ausgabe**.
+Nach „Teile berechnen“ springt das Programm selbst zu „Teile“. Über der 3D-Ansicht liegt eine
+Werkzeugleiste mit festen Ansichten (Iso, Vorn, Seite, Oben, Einpassen), Rückgängig/Wiederholen,
+„Stützen“ ein/aus und dem Umschalter für helles oder dunkles Design (wird gemerkt). Unten zeigt eine
+Statuszeile die letzte Meldung, „Protokoll“ klappt alle Meldungen auf (bei Fehlern automatisch).
+
+- **Modell öffnen**: STL, 3MF oder OBJ, per „Öffnen …“, „Zuletzt ▾“ (die letzten 8 Dateien) oder
+  einfach die Datei ins Fenster ziehen. Das Modell erscheint in der 3D-Ansicht auf einer Druckplatte mit
+  25-mm-Raster, der grüne Rahmen ist der Bauraum.
 - **Skalieren**: Unter dem Modell lässt sich der Maßstab in Prozent oder ein Zielmaß in X, Y oder Z
   eintragen, die anderen Achsen wachsen gleichmäßig mit. „100 %“ stellt die Originalgröße wieder her.
   Bereits gesetzte Schnitte wandern mit, Dübel, Zapfen und Magnetlöcher behalten ihre Größe in mm.
@@ -60,7 +67,8 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
   Teile). Mit „Stützen anzeigen ab 45°“ werden Überhänge, die Stützen brauchen, orange gefärbt und ihr
   Schatten auf der Platte gezeigt; darunter stehen Stützfläche, Auflage und Höhe. Die Stützen selbst
   erzeugt Bambu Studio (z.B. Baumstützen) beim Slicen der gespeicherten Lage.
-- **Teile berechnen** zeigt die Teile nummeriert, **Speichern …** schreibt jedes Teil als
+- **Teile berechnen** zeigt die Teile nummeriert und links als Karten mit Vorschaubild und grünem bzw.
+  rotem Punkt (passt / zu groß), **Speichern …** schreibt jedes Teil als
   STL (auf die Schnittfläche gelegt) und auf Wunsch alles zusammen als 3MF für Bambu Studio. In der 3MF
   liegen die Teile nebeneinander statt übereinander.
 - **In Bambu Studio öffnen** speichert die Teile in den Ordner `<Modell>_teile` neben dem Modell und

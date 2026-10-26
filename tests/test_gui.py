@@ -169,3 +169,47 @@ def test_skalieren(app, tmp_path):
     f._skalieren(1.0)
     assert f.mesh is f.original
     f.close()
+
+
+def test_moderne_oberflaeche(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui.profile, "pfad", lambda: tmp_path / "einstellungen.json")
+    modell = tmp_path / "zylinder.stl"
+    trimesh.creation.cylinder(radius=60, height=500).export(modell)
+    f = gui.Fenster()
+    f.show()
+    assert f.seiten.currentIndex() == 0 and not f.k_zuletzt.isEnabled()
+
+    # Datei ins Fenster ziehen
+    mime = gui.QtCore.QMimeData()
+    mime.setUrls([gui.QtCore.QUrl.fromLocalFile(str(modell))])
+    assert f._modell_aus(mime) == str(modell)
+    mime.setUrls([gui.QtCore.QUrl.fromLocalFile(str(tmp_path / "bild.png"))])
+    assert f._modell_aus(mime) is None
+    f._oeffnen(str(modell))
+    assert f.einstellungen["zuletzt"] == [str(modell)] and f.k_zuletzt.isEnabled()
+    assert f.status.text() == "Geladen: zylinder.stl"
+
+    # Design umschalten wird gemerkt
+    f.a_design.trigger()
+    assert f.design_name == "hell" and gui.profile.lade()["design"] == "hell"
+    f.a_design.trigger()
+    assert f.design_name == "dunkel"
+
+    # Nach dem Berechnen springt die Seite auf „Teile“, Karten haben Vorschaubilder
+    ergebnisse = []
+    f.signale.fertig.disconnect()
+    f.signale.fertig.connect(ergebnisse.append)
+    f._arbeite(f._einstellungen())
+    app.processEvents()
+    f._berechnet(ergebnisse[0])
+    assert f.seiten.currentIndex() == 3 and not f.teile_leer.isVisibleTo(f)
+    assert not f.teile_liste.item(0).icon().isNull()
+    assert "Teil 1" in f.teile_liste.item(0).text()
+    f._zeige_modell()
+    assert f.seiten.currentIndex() == 1
+
+    # Fehler klappen das Protokoll auf
+    monkeypatch.setattr(gui.QtWidgets.QMessageBox, "critical", lambda *a: None)
+    f._fehler("Test")
+    assert f.protokoll.isVisibleTo(f)
+    f.close()
