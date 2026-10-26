@@ -40,7 +40,12 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
 - **Dübel**: Anzahl pro Schnittfläche, Durchmesser, Lochtiefe je Seite und Spiel. Die Dübel werden
   automatisch mit Abstand zum Rand verteilt und als eigene STL mit ausgegeben. Ist eine
   Schnittfläche zu klein, steht das im Protokoll.
-- **Teile berechnen** zeigt die Teile farbig und nummeriert, **Speichern …** schreibt jedes Teil als
+- **Teile im Bauraum testen**: Nach „Teile berechnen“ sind passende Teile grün, zu große rot. Ein Teil
+  aus der Liste wählen und „In den Bauraum legen“: Es liegt dann druckfertig auf der Platte und lässt
+  sich mit den Pfeilen verschieben und mit den Ringen drehen (oder mit ↻ X/Y/Z um 90°). Teil und
+  Bauraum werden grün, solange alles passt, sonst rot mit Angabe, wo es übersteht. „Auto-Lage“ legt
+  das Teil wieder automatisch hin. Die von Hand gewählte Lage wird beim Speichern übernommen.
+- **Teile berechnen** zeigt die Teile nummeriert, **Speichern …** schreibt jedes Teil als
   STL (auf die Schnittfläche gelegt) und auf Wunsch alles zusammen als 3MF für Bambu Studio.
 
 ## Kommandozeile

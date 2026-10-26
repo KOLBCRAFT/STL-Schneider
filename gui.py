@@ -7,15 +7,18 @@ from pathlib import Path
 
 import numpy as np
 import pyvista as pv
+import trimesh
 from pyvistaqt import QtInteractor
 from qtpy import QtCore, QtWidgets
 
 import profile_speicher as profile
 import stl_schneider as kern
 
-TEILFARBEN = ["#4c6ef5", "#f76707", "#37b24d", "#e64980", "#15aabf", "#fab005", "#7950f2", "#82c91e",
-              "#fd7e14", "#228be6", "#be4bdb", "#12b886"]
 EIGENER = "Eigene Maße"
+PASST_FARBE = "#40c057"
+ZU_GROSS_FARBE = "#fa5252"
+PASST_TOENE = (PASST_FARBE, "#2b8a3e")
+ZU_GROSS_TOENE = (ZU_GROSS_FARBE, "#c92a2a")
 MODELLFARBE = "#adb5bd"
 SCHNITTFARBE = "#d9480f"
 
@@ -41,6 +44,9 @@ class Fenster(QtWidgets.QMainWindow):
         self.ebene = None         # aktuelle Ebene des Widgets (punkt, normale)
         self.schnitte = []        # hinzugefügte Ebenen
         self.ebene_widget = None
+        self.lagen = {}           # Teil-Index -> 4x4-Matrix, von Hand im Bauraum platziert
+        self.teil_akteur = None
+        self.teil_widget = None
         self.ergebnis = None      # (teile, anzahl_dübel, einstellungen) nach "Teile berechnen"
 
         self.signale = Signale()
@@ -61,7 +67,8 @@ class Fenster(QtWidgets.QMainWindow):
         rollen = QtWidgets.QScrollArea()
         rollen.setWidgetResizable(True)
         rollen.setWidget(links)
-        rollen.setMinimumWidth(340)
+        rollen.setMinimumWidth(390)
+        self.rollen = rollen
         linke_seite = QtWidgets.QWidget()
         lv = QtWidgets.QVBoxLayout(linke_seite)
         lv.setContentsMargins(0, 0, 0, 0)
@@ -82,7 +89,7 @@ class Fenster(QtWidgets.QMainWindow):
         rechts.setSizes([760, 140])
         teiler.addWidget(rechts)
         teiler.setStretchFactor(1, 1)
-        teiler.setSizes([360, 1040])
+        teiler.setSizes([410, 990])
 
         # Modell
         gruppe, form = self._gruppe(spalte, "Modell")
@@ -213,6 +220,40 @@ class Fenster(QtWidgets.QMainWindow):
         self.maus3d_takt = QtCore.QTimer(self)
         self.maus3d_takt.timeout.connect(self._maus3d_schritt)
 
+        # Teile im Bauraum testen
+        self.teile_gruppe, form = self._gruppe(spalte, "Teile im Bauraum testen")
+        hilfe = QtWidgets.QLabel("Grün = passt in den Bauraum, rot = zu groß. Teil wählen und in den Bauraum legen. Dann mit den Pfeilen verschieben "
+                                 "und mit den Ringen drehen. Die Lage wird beim Speichern übernommen.")
+        hilfe.setWordWrap(True)
+        form.addRow(hilfe)
+        self.teile_liste = QtWidgets.QListWidget()
+        self.teile_liste.setMaximumHeight(130)
+        self.teile_liste.currentRowChanged.connect(self._teil_gewaehlt)
+        form.addRow(self.teile_liste)
+        zeile = QtWidgets.QHBoxLayout()
+        self.k_bauraum = QtWidgets.QPushButton("In den Bauraum legen")
+        self.k_bauraum.clicked.connect(self._in_bauraum)
+        zeile.addWidget(self.k_bauraum)
+        self.k_alle = QtWidgets.QPushButton("Alle Teile")
+        self.k_alle.clicked.connect(self._zeige_teile)
+        zeile.addWidget(self.k_alle)
+        form.addRow(zeile)
+        zeile = QtWidgets.QHBoxLayout()
+        k = QtWidgets.QPushButton("Auto-Lage")
+        k.setToolTip("Teil wieder automatisch druckfertig hinlegen")
+        k.clicked.connect(lambda: self._in_bauraum(neu=True))
+        zeile.addWidget(k)
+        for text, achse in (("↻ X", 0), ("↻ Y", 1), ("↻ Z", 2)):
+            k = QtWidgets.QPushButton(text)
+            k.setToolTip(f"90° um die {'XYZ'[achse]}-Achse drehen")
+            k.clicked.connect(lambda _=False, a=achse: self._teil_drehen(a))
+            zeile.addWidget(k)
+        form.addRow(zeile)
+        self.passt_info = QtWidgets.QLabel("")
+        self.passt_info.setWordWrap(True)
+        form.addRow(self.passt_info)
+        self.teile_gruppe.setVisible(False)
+
         # Ausgabe
         gruppe, form = self._gruppe(spalte, "Ausgabe")
         self.dreimf = QtWidgets.QCheckBox("3MF für Bambu Studio")
@@ -298,6 +339,9 @@ class Fenster(QtWidgets.QMainWindow):
 
     def _zeige_modell(self):
         self.ergebnis = None
+        self.lagen = {}
+        self.teile_gruppe.setVisible(False)
+        self._entferne_teil_widget()
         self._knoepfe()
         p = self.ansicht
         p.clear_plane_widgets()
@@ -622,7 +666,27 @@ class Fenster(QtWidgets.QMainWindow):
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
         self._log(f"{len(teile)} Teile, {n} Dübel. {passt} von {len(teile)} passen auf die Platte. "
                   "Mit „Speichern …“ ausgeben.")
-        # Teile farbig und leicht auseinandergezogen zeigen
+        self.lagen = {}
+        self.huellen = [t.convex_hull.vertices if len(t.vertices) > 2000 else t.vertices for t in teile]
+        self.teile_liste.blockSignals(True)
+        self.teile_liste.clear()
+        for i, t in enumerate(teile):
+            ok = "passt" if kern.passt_irgendwie(t, e["bauraum"]) else "zu groß"
+            x, y, z = sorted(t.extents, reverse=True)
+            self.teile_liste.addItem(f"Teil {i + 1}: {x:.0f} × {y:.0f} × {z:.0f} mm, {ok}")
+        self.teile_liste.setCurrentRow(0)
+        self.teile_liste.blockSignals(False)
+        self.teile_gruppe.setVisible(True)
+        self._zeige_teile()
+        QtCore.QTimer.singleShot(50, lambda: self.rollen.ensureWidgetVisible(self.teile_gruppe))
+
+    def _zeige_teile(self):
+        """Alle Teile farbig und leicht auseinandergezogen zeigen."""
+        if self.ergebnis is None:
+            return
+        teile = self.ergebnis[0]
+        self.im_bauraum = False
+        self._entferne_teil_widget()
         p = self.ansicht
         p.clear_plane_widgets()
         self.ebene_widget = None
@@ -635,11 +699,127 @@ class Fenster(QtWidgets.QMainWindow):
             versatz = richtung / laenge * abstand if laenge > 1e-6 else np.zeros(3)
             netz = zu_pyvista(t)
             netz.translate(versatz, inplace=True)
-            p.add_mesh(netz, color=TEILFARBEN[i % len(TEILFARBEN)], smooth_shading=True, name=f"teil{i}")
+            passt = kern.passt_irgendwie(t, self.ergebnis[2]["bauraum"])
+            # Abwechselnd hell/dunkel, damit benachbarte Teile unterscheidbar bleiben
+            farben = PASST_TOENE if passt else ZU_GROSS_TOENE
+            p.add_mesh(netz, color=farben[i % 2], smooth_shading=True, name=f"teil{i}")
             p.add_point_labels([t.bounds.mean(axis=0) + versatz], [f"{i + 1}"], font_size=14,
                                shape_opacity=0.6, always_visible=True, name=f"nummer{i}")
         p.add_axes()
+        p.reset_camera()
         p.render()
+        self.passt_info.setText("")
+
+    # ---------- Teil im Bauraum ----------
+
+    def _entferne_teil_widget(self):
+        if self.teil_widget is not None:
+            try:
+                self.teil_widget.remove()
+            except Exception:
+                pass
+        self.teil_widget = None
+        self.teil_akteur = None
+
+    def _teil_gewaehlt(self, zeile):
+        if getattr(self, "im_bauraum", False) and zeile >= 0:
+            self._in_bauraum()
+
+    def _in_bauraum(self, neu=False):
+        if self.ergebnis is None or self.teile_liste.currentRow() < 0:
+            return
+        i = self.teile_liste.currentRow()
+        teil = self.ergebnis[0][i]
+        b = self.ergebnis[2]["bauraum"]
+        if neu or i not in self.lagen:
+            m = kern.platte_lage(teil, b)
+            # In die Mitte der Platte schieben
+            pts = trimesh.transform_points(self.huellen[i], m)
+            mitte_xy = (pts.min(axis=0) + pts.max(axis=0)) / 2
+            m = trimesh.transformations.translation_matrix([b[0] / 2 - mitte_xy[0], b[1] / 2 - mitte_xy[1], 0]) @ m
+            self.lagen[i] = m
+
+        self.im_bauraum = True
+        self._entferne_teil_widget()
+        p = self.ansicht
+        p.clear_plane_widgets()
+        self.ebene_widget = None
+        p.clear()
+        box = pv.Box(bounds=(0, b[0], 0, b[1], 0, b[2]))
+        p.add_mesh(box, style="wireframe", color="#2b8a3e", line_width=2, name="bauraum", pickable=False)
+        platte = pv.Plane(center=(b[0] / 2, b[1] / 2, -0.5), i_size=b[0], j_size=b[1])
+        p.add_mesh(platte, color="#495057", opacity=0.5, name="platte", pickable=False)
+        self.teil_akteur = p.add_mesh(zu_pyvista(teil), color=PASST_FARBE,
+                                      smooth_shading=True, name="teil_im_bauraum")
+        self.teil_akteur.user_matrix = self.lagen[i]
+        pts = trimesh.transform_points(self.huellen[i], self.lagen[i])
+        self.teil_widget = p.add_affine_transform_widget(
+            self.teil_akteur, origin=tuple((pts.min(axis=0) + pts.max(axis=0)) / 2),
+            interact_callback=self._teil_bewegt, release_callback=self._teil_losgelassen)
+        p.add_axes()
+        p.reset_camera()
+        p.render()
+        self._pruefe_lage()
+
+    def _teil_bewegt(self, matrix):
+        self.lagen[self.teile_liste.currentRow()] = np.array(matrix)
+        self._pruefe_lage()
+
+    def _teil_losgelassen(self, matrix):
+        self._teil_bewegt(matrix)
+        # Widget an die neue Teilmitte setzen, damit Drehungen um das Teil herum gehen
+        i = self.teile_liste.currentRow()
+        pts = trimesh.transform_points(self.huellen[i], self.lagen[i])
+        if self.teil_widget is not None:
+            self.teil_widget.origin = tuple((pts.min(axis=0) + pts.max(axis=0)) / 2)
+
+    def _teil_drehen(self, achse):
+        if not getattr(self, "im_bauraum", False) or self.teil_akteur is None:
+            return
+        i = self.teile_liste.currentRow()
+        m = self.lagen[i]
+        pts = trimesh.transform_points(self.huellen[i], m)
+        mitte = (pts.min(axis=0) + pts.max(axis=0)) / 2
+        richtung = np.zeros(3)
+        richtung[achse] = 1.0
+        rot = trimesh.transformations.rotation_matrix(np.pi / 2, richtung, mitte)
+        m = rot @ m
+        # Wieder auf die Platte setzen
+        pts = trimesh.transform_points(self.huellen[i], m)
+        m = trimesh.transformations.translation_matrix([0, 0, -pts.min(axis=0)[2]]) @ m
+        self.lagen[i] = m
+        self.teil_akteur.user_matrix = m
+        self._teil_losgelassen(m)
+        self.ansicht.render()
+
+    def _pruefe_lage(self):
+        i = self.teile_liste.currentRow()
+        b = np.array(self.ergebnis[2]["bauraum"], float)
+        pts = trimesh.transform_points(self.huellen[i], self.lagen[i])
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        ueber = np.maximum(hi - b, 0)
+        unter = np.maximum(-lo, 0)
+        probleme = []
+        for k, name in enumerate("XYZ"):
+            if ueber[k] > 0.05:
+                probleme.append(f"{ueber[k]:.1f} mm zu weit in +{name}")
+            if unter[k] > 0.05:
+                probleme.append("unter der Platte" if k == 2 else f"{unter[k]:.1f} mm zu weit in −{name}")
+        x, y, z = hi - lo
+        if probleme:
+            text = f"Teil {i + 1} ({x:.0f} × {y:.0f} × {z:.0f} mm) ragt hinaus: " + ", ".join(probleme)
+            farbe = "#c92a2a"
+        else:
+            text = f"Teil {i + 1} ({x:.0f} × {y:.0f} × {z:.0f} mm) passt in den Bauraum."
+            farbe = "#2b8a3e"
+        self.passt_info.setText(text)
+        self.passt_info.setStyleSheet(f"color: {farbe}; font-weight: bold;")
+        akteur = self.ansicht.actors.get("bauraum")
+        if akteur is not None:
+            akteur.prop.color = farbe
+        if self.teil_akteur is not None:
+            self.teil_akteur.prop.color = ZU_GROSS_FARBE if probleme else PASST_FARBE
+        self.ansicht.render()
 
     def _speichern(self, ordner=None):
         if self.ergebnis is None:
@@ -653,7 +833,8 @@ class Fenster(QtWidgets.QMainWindow):
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             kern.exportiere(teile, self.pfad.stem, ziel, e["bauraum"], drehen=self.drehen.isChecked(),
-                            dreimf=self.dreimf.isChecked(), duebel=e["duebel"], anzahl_duebel=n, log=self._log)
+                            dreimf=self.dreimf.isChecked(), duebel=e["duebel"], anzahl_duebel=n, log=self._log,
+                            lagen=self.lagen)
         except Exception as fehler:
             self._fehler(str(fehler))
             return

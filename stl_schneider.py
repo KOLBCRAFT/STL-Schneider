@@ -344,8 +344,8 @@ def zerteile(mesh, ebenen, duebel=None, log=None):
     return ergebnis, zaehler
 
 
-def auf_platte_legen(teil, bauraum=None):
-    """Legt das Teil auf die Platte.
+def platte_lage(teil, bauraum=None):
+    """4x4-Matrix, die das Teil druckfertig auf die Platte legt (Ecke im Ursprung).
 
     Bevorzugt die größte ebene Fläche (meist die Schnittfläche) nach unten. Passt das Teil so
     nicht in den Bauraum, wird die nächstkleinere ebene Fläche bzw. eine 90°-Lage genommen.
@@ -356,22 +356,32 @@ def auf_platte_legen(teil, bauraum=None):
             lagen.append(trimesh.geometry.align_vectors(teil.facets_normal[i], [0, 0, -1]))
     for v in ([0, 0, -1], [0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]):
         lagen.append(trimesh.geometry.align_vectors(v, [0, 0, -1]))
+    hull = teil.convex_hull.vertices if len(teil.vertices) > 2000 else teil.vertices
+
+    def auf_ecke(m):
+        pts = trimesh.transform_points(hull, m)
+        return trimesh.transformations.translation_matrix(-pts.min(axis=0)) @ m
+
     erstes = None
     for rot in lagen:
-        t = teil.copy()
-        t.apply_transform(rot)
-        t.apply_translation(-t.bounds[0])
+        m = auf_ecke(rot)
         if erstes is None:
-            erstes = t
+            erstes = m
         if bauraum is None:
-            return t
-        if passt(t, bauraum):
-            x, y, _ = t.extents
+            return m
+        ausmass = np.ptp(trimesh.transform_points(hull, m), axis=0)
+        x, y, z = ausmass
+        if z <= bauraum[2] and ((x <= bauraum[0] and y <= bauraum[1]) or (y <= bauraum[0] and x <= bauraum[1])):
             if x > bauraum[0] or y > bauraum[1]:
-                t.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1]))
-                t.apply_translation(-t.bounds[0])
-            return t
+                m = auf_ecke(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1]) @ m)
+            return m
     return erstes
+
+
+def auf_platte_legen(teil, bauraum=None):
+    t = teil.copy()
+    t.apply_transform(platte_lage(teil, bauraum))
+    return t
 
 
 def passt(teil, bauraum):
@@ -381,12 +391,19 @@ def passt(teil, bauraum):
     return z <= bz and ((x <= bx and y <= by) or (y <= bx and x <= by))
 
 
-def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=None, anzahl_duebel=0, log=print):
+def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=None, anzahl_duebel=0, log=print,
+               lagen=None):
+    """lagen: {index: 4x4-Matrix} für Teile, die von Hand im Bauraum platziert wurden."""
     ordner = Path(ordner)
     ordner.mkdir(parents=True, exist_ok=True)
     szene = trimesh.Scene()
+    lagen = lagen or {}
     for i, t in enumerate(teile, 1):
-        if drehen:
+        if i - 1 in lagen:
+            t = t.copy()
+            t.apply_transform(lagen[i - 1])
+            t.apply_translation([0, 0, -t.bounds[0][2]])  # auf die Platte setzen
+        elif drehen:
             t = auf_platte_legen(t, bauraum)
         datei = ordner / f"{name}_teil{i:02d}.stl"
         t.export(datei)
