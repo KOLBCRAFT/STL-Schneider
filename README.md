@@ -58,7 +58,13 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
   Schatten auf der Platte gezeigt; darunter stehen Stützfläche, Auflage und Höhe. Die Stützen selbst
   erzeugt Bambu Studio (z.B. Baumstützen) beim Slicen der gespeicherten Lage.
 - **Teile berechnen** zeigt die Teile nummeriert, **Speichern …** schreibt jedes Teil als
-  STL (auf die Schnittfläche gelegt) und auf Wunsch alles zusammen als 3MF für Bambu Studio.
+  STL (auf die Schnittfläche gelegt) und auf Wunsch alles zusammen als 3MF für Bambu Studio. In der 3MF
+  liegen die Teile nebeneinander statt übereinander.
+- **In Bambu Studio öffnen** speichert die Teile in den Ordner `<Modell>_teile` neben dem Modell und
+  öffnet die 3MF sofort in Bambu Studio. Dort am besten noch „Anordnen“ (Taste A) drücken, damit Bambu
+  Studio die Teile auf die Platten verteilt. Bambu Studio wird automatisch gesucht (Installationseintrag,
+  „C:\Programme\Bambu Studio“). Liegt es woanders, unter „Ausgabe“ mit „Wählen …“ die
+  `bambu-studio.exe` angeben, der Pfad wird gemerkt.
 
 ## Kommandozeile
 
@@ -69,6 +75,7 @@ python stl_schneider.py modell.stl --schnitt z=50 --schnitt x=120   # manuell
 python stl_schneider.py modell.stl --duebel 3 --duebel-durchmesser 8
 python stl_schneider.py modell.stl --duebel 0               # ohne Dübel
 python stl_schneider.py modell.stl --3mf
+python stl_schneider.py modell.stl --bambu                  # 3MF schreiben und in Bambu Studio öffnen
 ```
 
 `python stl_schneider.py --help` zeigt alle Optionen.

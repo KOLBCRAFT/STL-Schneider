@@ -11,6 +11,7 @@ import trimesh
 from pyvistaqt import QtInteractor
 from qtpy import QtCore, QtGui, QtWidgets
 
+import bambu_studio
 import profile_speicher as profile
 import stl_schneider as kern
 
@@ -328,6 +329,15 @@ class Fenster(QtWidgets.QMainWindow):
         self.drehen.setChecked(True)
         form.addRow(self.dreimf)
         form.addRow(self.drehen)
+        zeile = QtWidgets.QHBoxLayout()
+        self.bambu_info = QtWidgets.QLabel("")
+        self.bambu_info.setWordWrap(True)
+        knopf = QtWidgets.QPushButton("Wählen …")
+        knopf.setToolTip("Pfad zu bambu-studio.exe selbst festlegen")
+        knopf.clicked.connect(self._bambu_waehlen)
+        zeile.addWidget(self.bambu_info, 1)
+        zeile.addWidget(knopf)
+        form.addRow(zeile)
 
         self.k_berechnen = QtWidgets.QPushButton("Teile berechnen")
         self.k_berechnen.clicked.connect(self._berechnen)
@@ -335,12 +345,16 @@ class Fenster(QtWidgets.QMainWindow):
         self.k_modell.clicked.connect(self._zeige_modell)
         self.k_speichern = QtWidgets.QPushButton("Speichern …")
         self.k_speichern.clicked.connect(self._speichern)
-        for k in (self.k_berechnen, self.k_modell, self.k_speichern):
+        self.k_bambu = QtWidgets.QPushButton("In Bambu Studio öffnen")
+        self.k_bambu.setToolTip("Speichert die Teile neben dem Modell und öffnet die 3MF in Bambu Studio")
+        self.k_bambu.clicked.connect(self._in_bambu)
+        for k in (self.k_berechnen, self.k_modell, self.k_speichern, self.k_bambu):
             k.setMinimumHeight(32)
             unten.addWidget(k)
         spalte.addStretch(1)
 
         self._modus_gewaehlt()
+        self._bambu_anzeigen()
         self._knoepfe()
         QtCore.QTimer.singleShot(0, lambda: self.maus3d.setChecked(True))
 
@@ -364,6 +378,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.k_berechnen.setEnabled(geladen)
         self.k_modell.setEnabled(self.ergebnis is not None)
         self.k_speichern.setEnabled(self.ergebnis is not None)
+        self.k_bambu.setEnabled(self.ergebnis is not None)
 
     def _log(self, text):
         self.protokoll.appendPlainText(text)
@@ -901,7 +916,7 @@ class Fenster(QtWidgets.QMainWindow):
         self._knoepfe()
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
         self._log(f"{len(teile)} Teile, {n} Verbinder. {passt} von {len(teile)} passen auf die Platte. "
-                  "Mit „Speichern …“ ausgeben.")
+                  "Mit „Speichern …“ ausgeben oder direkt „In Bambu Studio öffnen“.")
         self.lagen = {}
         self.huellen = [t.convex_hull.vertices if len(t.vertices) > 2000 else t.vertices for t in teile]
         self.teile_liste.blockSignals(True)
@@ -1124,28 +1139,67 @@ class Fenster(QtWidgets.QMainWindow):
             self.teil_akteur.prop.color = ZU_GROSS_FARBE if probleme else PASST_FARBE
         self.ansicht.render()
 
-    def _speichern(self, ordner=None):
+    def _speichern(self, ordner=None, dreimf=None):
+        """Liefert den Pfad der 3MF (oder None), False wenn nichts gespeichert wurde."""
         if self.ergebnis is None:
-            return
+            return False
         gewaehlt = not ordner
         if not ordner:
             ordner = QtWidgets.QFileDialog.getExistingDirectory(self, "Ausgabeordner wählen", str(self.pfad.parent))
         if not ordner:
-            return
+            return False
         teile, n, e = self.ergebnis
         ziel = Path(ordner) / f"{self.pfad.stem}_teile"
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            kern.exportiere(teile, self.pfad.stem, ziel, e["bauraum"], drehen=self.drehen.isChecked(),
-                            dreimf=self.dreimf.isChecked(), duebel=e["duebel"], anzahl_duebel=n, log=self._log,
-                            lagen=self.lagen)
+            datei = kern.exportiere(teile, self.pfad.stem, ziel, e["bauraum"], drehen=self.drehen.isChecked(),
+                                    dreimf=self.dreimf.isChecked() if dreimf is None else dreimf,
+                                    duebel=e["duebel"], anzahl_duebel=n, log=self._log, lagen=self.lagen)
         except Exception as fehler:
             self._fehler(str(fehler))
-            return
+            return False
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         if gewaehlt and hasattr(os, "startfile"):
             os.startfile(ziel)
+        return datei
+
+    # --- Bambu Studio ---
+    def _bambu_programm(self):
+        return bambu_studio.finde(self.einstellungen.get("bambu_studio"))
+
+    def _bambu_anzeigen(self):
+        programm = self._bambu_programm()
+        if programm:
+            self.bambu_info.setText(f"Bambu Studio: {programm}")
+        else:
+            self.bambu_info.setText("Bambu Studio nicht gefunden. Es wird die Windows-Verknüpfung für .3mf benutzt.")
+
+    def _bambu_waehlen(self):
+        filter_ = "Bambu Studio (bambu-studio.exe);;Programme (*.exe);;Alle Dateien (*)" if os.name == "nt" \
+            else "Alle Dateien (*)"
+        datei, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Bambu Studio auswählen", "", filter_)
+        if not datei:
+            return
+        self.einstellungen["bambu_studio"] = datei
+        profile.speichere(self.einstellungen)
+        self._bambu_anzeigen()
+
+    def _in_bambu(self, ordner=None, starten=bambu_studio.oeffne):
+        """Speichert neben dem Modell (mit 3MF) und öffnet die 3MF in Bambu Studio."""
+        if self.ergebnis is None:
+            return None
+        datei = self._speichern(ordner or str(self.pfad.parent), dreimf=True)
+        if not datei:
+            return None
+        try:
+            if starten([datei], self._bambu_programm()):
+                self._log("In Bambu Studio geöffnet. Dort ggf. mit „Anordnen“ (Taste A) auf die Platten verteilen.")
+            else:
+                self._log(f"Bambu Studio nicht gefunden. Die 3MF liegt hier: {datei}")
+        except OSError as fehler:
+            self._fehler(f"Bambu Studio konnte nicht gestartet werden: {fehler}")
+        return datei
 
 
 def selbsttest(app):

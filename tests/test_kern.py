@@ -77,6 +77,21 @@ def test_export(tmp_path, zylinder):
     assert namen == ["test_duebel_2x.stl", "test_teil01.stl", "test_teil02.stl", "test_teile.3mf"]
 
 
+def test_3mf_teile_nebeneinander(tmp_path, zylinder):
+    teile, n = kern.zerteile(zylinder, [kern.ebene_achse(2, 0.0)], kern.Duebel(2))
+    datei = kern.exportiere(teile, "test", tmp_path, H2D, dreimf=True, duebel=kern.Duebel(2), anzahl_duebel=n,
+                            log=lambda *_: None)
+    assert datei == tmp_path / "test_teile.3mf"
+    szene = trimesh.load(datei)
+    boxen = [g.bounds for g in szene.dump()]
+    assert len(boxen) == 3
+    for i, a in enumerate(boxen):
+        assert a[0][2] == pytest.approx(0, abs=0.01)  # alle liegen auf der Platte
+        for b in boxen[i + 1:]:
+            ueberlappt = all(a[0][k] < b[1][k] and b[0][k] < a[1][k] for k in (0, 1))
+            assert not ueberlappt
+
+
 def test_zapfen_angeformt(zylinder):
     d = kern.Duebel(anzahl=2, durchmesser=8, tiefe=8, art="zapfen")
     ohne, _ = kern.zerteile(zylinder, [kern.ebene_achse(2, 50.0)])

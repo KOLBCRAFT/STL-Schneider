@@ -52,6 +52,14 @@ def test_ablauf(app, tmp_path):
     ausgabe = tmp_path / "zylinder_teile"
     assert (ausgabe / "zylinder_teil01.stl").exists()
     assert (ausgabe / "zylinder_teile.3mf").exists()
+
+    # In Bambu Studio öffnen: speichert neben dem Modell, auch wenn 3MF abgewählt ist
+    f.dreimf.setChecked(False)
+    gestartet = []
+    datei = f._in_bambu(starten=lambda dateien, programm: gestartet.append(dateien) or True)
+    assert datei == modell.parent / "zylinder_teile" / "zylinder_teile.3mf" and datei.exists()
+    assert gestartet == [[datei]]
+    assert "In Bambu Studio geöffnet" in f.protokoll.toPlainText()
     f.close()
 
 

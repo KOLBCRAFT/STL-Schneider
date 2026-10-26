@@ -569,7 +569,7 @@ def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=N
     """lagen: {index: 4x4-Matrix} für Teile, die von Hand im Bauraum platziert wurden."""
     ordner = Path(ordner)
     ordner.mkdir(parents=True, exist_ok=True)
-    szene = trimesh.Scene()
+    fuer_3mf = []
     lagen = lagen or {}
     for i, t in enumerate(teile, 1):
         if i - 1 in lagen:
@@ -580,7 +580,7 @@ def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=N
             t = auf_platte_legen(t, bauraum)
         datei = ordner / f"{name}_teil{i:02d}.stl"
         t.export(datei)
-        szene.add_geometry(t, node_name=f"teil{i:02d}")
+        fuer_3mf.append((f"teil{i:02d}", t))
         status = "ok" if passt(t, bauraum) else "PASST NICHT"
         log(f"Teil {i:02d}: {' x '.join(f'{v:.1f}' for v in t.extents)} mm  {status}  -> {datei.name}")
     if duebel and duebel.art == "zapfen" and anzahl_duebel:
@@ -592,15 +592,37 @@ def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=N
         stifte = trimesh.util.concatenate(duebel_teile(anzahl_duebel, duebel))
         datei = ordner / f"{name}_duebel_{anzahl_duebel}x.stl"
         stifte.export(datei)
-        szene.add_geometry(stifte, node_name="duebel")
+        fuer_3mf.append(("duebel", stifte))
         log(f"{anzahl_duebel} Dübel {duebel.durchmesser:g} x {2 * duebel.tiefe - 0.6:g} mm -> {datei.name}")
     elif anzahl_duebel:
         log(f"{anzahl_duebel} Dübellöcher für {duebel.durchmesser:g} mm Dübel, {duebel.tiefe:g} mm tief pro Seite")
+    dreimf_datei = None
     if dreimf:
-        datei = ordner / f"{name}_teile.3mf"
-        szene.export(datei)
-        log(f"3MF: {datei.name}")
+        szene = trimesh.Scene()
+        for (knoten, t), versatz in zip(fuer_3mf, nebeneinander([t for _, t in fuer_3mf], bauraum)):
+            t = t.copy()
+            t.apply_translation(versatz)
+            szene.add_geometry(t, node_name=knoten)
+        dreimf_datei = ordner / f"{name}_teile.3mf"
+        szene.export(dreimf_datei)
+        log(f"3MF: {dreimf_datei.name}")
     log(f"{len(teile)} Teile gespeichert in {ordner}")
+    return dreimf_datei
+
+
+def nebeneinander(teile, bauraum, abstand=10.0):
+    """Verschiebungen, die die Teile in Reihen nebeneinander legen statt übereinander.
+    Reihen werden so breit wie die Platte; was nicht mehr draufpasst, liegt dahinter."""
+    breite = bauraum[0]
+    versatz, x, y, reihe = [], 0.0, 0.0, 0.0
+    for t in teile:
+        (x0, y0, _), (x1, y1, _) = t.bounds
+        if x > 0 and x + (x1 - x0) > breite:
+            x, y, reihe = 0.0, y + reihe + abstand, 0.0
+        versatz.append(np.array([x - x0, y - y0, 0.0]))
+        x += (x1 - x0) + abstand
+        reihe = max(reihe, y1 - y0)
+    return versatz
 
 
 def main():
@@ -622,6 +644,7 @@ def main():
     p.add_argument("--nicht-drehen", action="store_true", help="Teile nicht auf die Schnittfläche legen")
     p.add_argument("--3mf", dest="dreimf", action="store_true", help="Zusätzlich alle Teile in einer 3MF")
     p.add_argument("--aus", default=None, help="Ausgabeordner")
+    p.add_argument("--bambu", action="store_true", help="Danach die 3MF in Bambu Studio öffnen (schaltet --3mf ein)")
     a = p.parse_args()
 
     bauraum = a.bauraum or DRUCKER[a.drucker]
@@ -641,8 +664,13 @@ def main():
     else:
         teile, n = automatisch(mesh, bauraum, a.rand, duebel)
     aus = a.aus or pfad.with_name(pfad.stem + "_teile")
-    exportiere(teile, pfad.stem, aus, bauraum, drehen=not a.nicht_drehen, dreimf=a.dreimf,
-               duebel=duebel, anzahl_duebel=n)
+    datei = exportiere(teile, pfad.stem, aus, bauraum, drehen=not a.nicht_drehen, dreimf=a.dreimf or a.bambu,
+                       duebel=duebel, anzahl_duebel=n)
+    if a.bambu:
+        import bambu_studio
+        programm = bambu_studio.finde()
+        if not bambu_studio.oeffne([datei], programm):
+            print("Bambu Studio wurde nicht gefunden. Die 3MF liegt hier:", datei)
 
 
 if __name__ == "__main__":
