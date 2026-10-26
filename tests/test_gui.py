@@ -87,3 +87,37 @@ def test_verbinder_setzen_und_rueckgaengig(app, tmp_path):
     teile, n = gui.kern.zerteile(f.mesh, e["schnitte"], e["duebel"])
     assert n == 1 and len(teile) == 2
     f.close()
+
+
+def test_beste_lage_und_stuetzen(app, tmp_path):
+    modell = tmp_path / "zylinder.stl"
+    trimesh.creation.cylinder(radius=60, height=500).export(modell)
+    f = gui.Fenster()
+    f.show()
+    f._oeffnen(str(modell))
+    ergebnisse = []
+    f.signale.fertig.disconnect()
+    f.signale.fertig.connect(ergebnisse.append)
+    f._arbeite(f._einstellungen())
+    app.processEvents()
+    f._berechnet(ergebnisse[0])
+    f.teile_liste.setCurrentRow(0)
+    f._in_bauraum()
+    # Teil um 90° kippen: liegender Zylinder braucht Stützen
+    f._teil_drehen(0)
+    assert "Stützen nötig" in f.passt_info.text()
+    assert "ueberhang" in f.ansicht.actors
+    lagen = []
+    f.signale.lage.disconnect()
+    f.signale.lage.connect(lagen.append)
+    f._beste_lage(alle=True)
+    import time
+    for _ in range(100):
+        app.processEvents()
+        if lagen:
+            break
+        time.sleep(0.1)
+    assert lagen and set(lagen[0]) == {0, 1}
+    f._lage_gefunden(lagen[0])
+    assert "ueberhang" not in f.ansicht.actors  # stehender Zylinder: keine Stützen
+    f.close()

@@ -125,3 +125,20 @@ def test_eigene_verbinder_positionen(zylinder):
     oben = max(teile, key=lambda t: t.centroid[2])
     assert not oben.contains([[20.0, 10.0, 1.0]])[0]
     assert oben.contains([[-20.0, -10.0, 1.0]])[0]
+
+
+def test_beste_lage_pilz_kopfueber():
+    stiel = trimesh.creation.cylinder(10, 60)
+    stiel.apply_translation([0, 0, 30])
+    schirm = trimesh.creation.cylinder(40, 10)
+    schirm.apply_translation([0, 0, 65])
+    pilz = trimesh.boolean.union([stiel, schirm], engine="manifold")
+    _, aufrecht = kern.ueberhang(pilz, np.eye(4))
+    assert aufrecht["stuetzflaeche"] > 4000  # Unterseite des Schirms hängt über
+    m, k = kern.beste_lage(pilz, H2D)
+    assert k["stuetzflaeche"] < 10
+    gelegt = pilz.copy()
+    gelegt.apply_transform(m)
+    assert gelegt.bounds[0] == pytest.approx([0, 0, 0], abs=1e-6)
+    # Schirm liegt auf der Platte: große Auflage
+    assert k["auflage"] > 4000

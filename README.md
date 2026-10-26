@@ -52,6 +52,11 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
   sich mit den Pfeilen verschieben und mit den Ringen drehen (oder mit ↻ X/Y/Z um 90°). Teil und
   Bauraum werden grün, solange alles passt, sonst rot mit Angabe, wo es übersteht. „Auto-Lage“ legt
   das Teil wieder automatisch hin. Die von Hand gewählte Lage wird beim Speichern übernommen.
+- **Beste Lage / Stützen**: „Beste Lage“ probiert rund 180 Ausrichtungen und wählt die mit möglichst wenig
+  Stützmaterial, guter Auflage und geringer Höhe, die in den Bauraum passt („Beste Lage für alle“ für alle
+  Teile). Mit „Stützen anzeigen ab 45°“ werden Überhänge, die Stützen brauchen, orange gefärbt und ihr
+  Schatten auf der Platte gezeigt; darunter stehen Stützfläche, Auflage und Höhe. Die Stützen selbst
+  erzeugt Bambu Studio (z.B. Baumstützen) beim Slicen der gespeicherten Lage.
 - **Teile berechnen** zeigt die Teile nummeriert, **Speichern …** schreibt jedes Teil als
   STL (auf die Schnittfläche gelegt) und auf Wunsch alles zusammen als 3MF für Bambu Studio.
 
