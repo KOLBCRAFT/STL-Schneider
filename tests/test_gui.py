@@ -192,9 +192,9 @@ def test_moderne_oberflaeche(app, tmp_path, monkeypatch):
     assert f.status.text() == "Geladen: zylinder.stl"
 
     # Design umschalten wird gemerkt
-    f.a_design.trigger()
+    f.design_wahl.setCurrentIndex(f.design_wahl.findData("hell"))
     assert f.design_name == "hell" and gui.profile.lade()["design"] == "hell"
-    f.a_design.trigger()
+    f.design_wahl.setCurrentIndex(f.design_wahl.findData("dunkel"))
     assert f.design_name == "dunkel"
 
     # Nach dem Berechnen springt die Seite auf „Teile“, Karten haben Vorschaubilder
@@ -215,3 +215,34 @@ def test_moderne_oberflaeche(app, tmp_path, monkeypatch):
     f._fehler("Test")
     assert f.protokoll.isVisibleTo(f)
     f.close()
+
+
+def test_einstellungen(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui.profile, "pfad", lambda: tmp_path / "einstellungen.json")
+    modell = tmp_path / "zylinder.stl"
+    trimesh.creation.cylinder(radius=60, height=500).export(modell)
+    f = gui.Fenster()
+    f.show()
+    f._oeffnen(str(modell))
+    f.a_einstellungen.trigger()
+    assert f.einstellungs_fenster.isVisible()
+
+    # Raster und Glanz abschalten wirkt sofort und wird gemerkt
+    assert "raster" in f.ansicht.actors
+    f.raster_an.setChecked(False)
+    assert "raster" not in f.ansicht.actors
+    f.glanz.setChecked(False)
+    assert f.ansicht.actors["modell"].GetProperty().GetSpecular() == 0
+    f.maus3d_tempo.setValue(15)
+    f.maus3d_umkehren.setChecked(True)
+    gespeichert = gui.profile.lade()
+    assert gespeichert["raster"] is False and gespeichert["glanz"] is False
+    assert gespeichert["maus3d_tempo"] == 15 and gespeichert["maus3d_umkehren"] is True
+    f.einstellungs_fenster.close()
+    f.close()
+
+    # Ein neues Fenster startet mit den gemerkten Werten
+    g = gui.Fenster()
+    assert not g.raster_an.isChecked() and not g.glanz.isChecked()
+    assert g.maus3d_tempo.value() == 15 and g.maus3d_umkehren.isChecked()
+    g.close()

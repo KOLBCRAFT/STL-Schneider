@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""STL-Schneider: zerteilt ein STL so, dass jedes Teil auf die Druckplatte passt.
+"""KOLBCRAFT Cutter: zerteilt ein STL so, dass jedes Teil auf die Druckplatte passt.
 
 Schnittpositionen werden in mm ab der Unterkante des Modells angegeben (x=0 ist die linke Kante).
 

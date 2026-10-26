@@ -1,5 +1,5 @@
 @echo off
-rem Startet den STL-Schneider. Beim ersten Start (und nach Updates) wird alles Noetige installiert.
+rem Startet den KOLBCRAFT Cutter. Beim ersten Start (und nach Updates) wird alles Noetige installiert.
 cd /d "%~dp0"
 where py >nul 2>nul
 if errorlevel 1 (
