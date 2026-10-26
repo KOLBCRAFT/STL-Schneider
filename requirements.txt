@@ -1,7 +1,8 @@
 trimesh
 numpy
-manifold3d
+scipy
 shapely
+manifold3d
 networkx
 lxml
-scipy
+rtree
