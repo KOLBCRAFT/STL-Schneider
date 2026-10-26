@@ -37,9 +37,16 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
 - **Schnittfenster**: Mit „Schnittfenster begrenzen“ wird nur geschnitten, wo der Querschnitt das blaue
   Rechteck (Breite × Höhe, Mitte = Mittelpunkt der Ebene) berührt. So lässt sich z.B. ein einzelner Ast
   abtrennen, während andere Äste in derselben Ebene ganz bleiben.
-- **Dübel**: Anzahl pro Schnittfläche, Durchmesser, Lochtiefe je Seite und Spiel. Die Dübel werden
-  automatisch mit Abstand zum Rand verteilt und als eigene STL mit ausgegeben. Ist eine
-  Schnittfläche zu klein, steht das im Protokoll.
+- **Verbinder**: Dübel (Löcher in beiden Hälften, Dübel als eigene STL), angeformte Zapfen (an der
+  größeren Hälfte, passendes Loch in der anderen) oder Löcher für Scheibenmagnete. Anzahl pro
+  Schnittfläche, Durchmesser, Tiefe/Länge/Magnethöhe und Spiel sind einstellbar. Die Verbinder werden
+  automatisch mit Abstand zum Rand verteilt. Ist eine Schnittfläche zu klein, steht das im Protokoll.
+- **Verbinder selbst setzen** (manuell): Schnitt in der Liste wählen. Das Modell wird an der Ebene
+  aufgeklappt, die Schnittfläche ist orange, die Verbinder als Kugeln (blau = automatisch, orange =
+  selbst gesetzt). Rechtsklick auf die Fläche setzt einen Verbinder, Rechtsklick auf einen Verbinder
+  entfernt ihn. Rechts ziehen zoomt weiterhin.
+- **Rückgängig / Wiederholen**: Strg+Z / Strg+Y oder die Knöpfe unter der Schnittliste, für Schnitte und
+  Verbinder.
 - **Teile im Bauraum testen**: Nach „Teile berechnen“ sind passende Teile grün, zu große rot. Ein Teil
   aus der Liste wählen und „In den Bauraum legen“: Es liegt dann druckfertig auf der Platte und lässt
   sich mit den Pfeilen verschieben und mit den Ringen drehen (oder mit ↻ X/Y/Z um 90°). Teil und

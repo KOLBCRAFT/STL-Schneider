@@ -111,3 +111,17 @@ def test_magnetloecher(zylinder):
     loch = np.pi * 3.1 ** 2 * 3.2 * 3
     for a, b in zip(sorted(ohne, key=lambda t: t.centroid[2]), sorted(teile, key=lambda t: t.centroid[2])):
         assert a.volume - b.volume == pytest.approx(loch, rel=0.05)
+
+
+def test_eigene_verbinder_positionen(zylinder):
+    d = kern.Duebel(anzahl=2)
+    eigene = [np.array([20.0, 10.0, 0.0])]
+    vorschau = kern.querschnitt(zylinder, kern.ebene_achse(2, 0.0), d, punkte=eigene)
+    assert len(vorschau) == 1 and vorschau[0].manuell
+    assert np.allclose(vorschau[0].verbinder[0], eigene[0], atol=1e-6)
+    teile, n = kern.zerteile(zylinder, [(*kern.ebene_achse(2, 0.0), None, eigene)], d)
+    assert n == 1
+    # Loch genau an der gewählten Stelle: Punkt knapp über der Schnittfläche liegt außerhalb des Materials
+    oben = max(teile, key=lambda t: t.centroid[2])
+    assert not oben.contains([[20.0, 10.0, 1.0]])[0]
+    assert oben.contains([[-20.0, -10.0, 1.0]])[0]

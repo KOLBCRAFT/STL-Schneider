@@ -123,44 +123,74 @@ def ebenen_achsen(normal):
     return u, np.cross(n, u)
 
 
-def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None):
-    """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt die Schnittflächen.
+@dataclass
+class Insel:
+    """Eine zusammenhängende Fläche im Querschnitt."""
+    flaeche: object          # shapely-Polygon in Ebenen-Koordinaten
+    rand: np.ndarray         # Außenrand als 3D-Punkte
+    innen: np.ndarray        # ein Punkt sicher innerhalb, 3D
+    gewaehlt: bool           # wird geschnitten (liegt im Fenster)
+    verbinder: list          # Verbinder-Mitten, 3D
+    manuell: bool = False    # Verbinder von Hand gesetzt
 
-    Mit duebel werden Löcher in beide Schnittflächen gebohrt, mit fenster wird nur innerhalb des
-    Fensters geschnitten. Rückgabe: (teile, anzahl_dübel).
+
+def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, punkte=None):
+    """Inseln des Querschnitts mit den geplanten Verbinder-Positionen.
+
+    punkte: von Hand gesetzte Verbinder (3D). Sie ersetzen auf ihrer Insel die automatischen.
     """
     origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
     normal = normal / np.linalg.norm(normal)
-
-    # Inseln des Querschnitts: (polygon_2d, 3D-Randpunkte, 3D-Innenpunkt, wird_geschnitten)
-    inseln = []
     eben = schnitt_2d(mesh, origin, normal, [0.0])[0]
     if eben is None:
-        return [mesh], 0
+        return []
     nach_3d = eben.metadata["to_3D"]
 
     def zu_3d(xy):
-        xy = np.asarray(xy, float)
+        xy = np.asarray(xy, float).reshape(-1, 2)
         return trimesh.transform_points(np.column_stack([xy, np.zeros(len(xy))]), nach_3d)
 
+    eigene_2d = []
+    if punkte is not None and len(punkte):
+        eigene_2d = trimesh.transform_points(np.asarray(punkte, float), np.linalg.inv(nach_3d))[:, :2]
+
+    from shapely.geometry import Point
+    inseln = []
     for flaeche in eben.polygons_full:
         rand = zu_3d(np.asarray(flaeche.exterior.coords))
         innen = zu_3d([flaeche.representative_point().coords[0]])[0]
         gewaehlt = fenster is None or fenster.enthaelt(rand)
-        inseln.append((flaeche, innen, gewaehlt))
-    if not any(i[2] for i in inseln):
+        insel = Insel(flaeche, rand, innen, gewaehlt, [])
+        if gewaehlt and duebel and duebel.anzahl > 0:
+            eigene = [p for p in eigene_2d if flaeche.contains(Point(p))]
+            if eigene:
+                insel.verbinder, insel.manuell = list(zu_3d(eigene)), True
+            else:
+                pos = duebel_positionen(flaeche, duebel)
+                insel.verbinder = list(zu_3d(pos)) if pos else []
+        inseln.append(insel)
+    return inseln
+
+
+def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None, punkte=None):
+    """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt die Schnittflächen.
+
+    Mit duebel werden Verbinder angebracht, mit fenster wird nur innerhalb des Fensters geschnitten,
+    punkte sind von Hand gesetzte Verbinder-Positionen. Rückgabe: (teile, anzahl_verbinder).
+    """
+    origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
+    normal = normal / np.linalg.norm(normal)
+
+    alle = querschnitt(mesh, (origin, normal), duebel, fenster, punkte)
+    if not any(i.gewaehlt for i in alle):
         return [mesh], 0
+    inseln = [(i.flaeche, i.innen, i.gewaehlt) for i in alle]
 
     mitten = []
-    if duebel and duebel.anzahl > 0:
-        for flaeche, _, gewaehlt in inseln:
-            if not gewaehlt:
-                continue
-            punkte = duebel_positionen(flaeche, duebel)
-            if not punkte and log:
-                log(f"  Schnittfläche zu klein für Verbinder ({flaeche.area:.0f} mm²)")
-            if punkte:
-                mitten += list(zu_3d(punkte))
+    for i in alle:
+        if i.gewaehlt and duebel and duebel.anzahl > 0 and not i.verbinder and log:
+            log(f"  Schnittfläche zu klein für Verbinder ({i.flaeche.area:.0f} mm²)")
+        mitten += i.verbinder
 
     haelften = {}
     for seite in (-1, 1):
@@ -369,14 +399,15 @@ def wird_geschnitten(teil, ebene):
 
 
 def zerteile(mesh, ebenen, duebel=None, log=None):
-    """Schneidet an beliebigen Ebenen (punkt, normale[, fenster]). Rückgabe: (teile, anzahl_dübel)"""
+    """Schneidet an Ebenen (punkt, normale[, fenster[, verbinder_punkte]]). Rückgabe: (teile, anzahl_verbinder)"""
     teile, zaehler = [mesh], 0
     for ebene in ebenen:
         neu = []
         for t in teile:
             if wird_geschnitten(t, ebene):
                 fenster = ebene[2] if len(ebene) > 2 else None
-                haelften, n = schneide(t, ebene[:2], duebel, log, fenster)
+                punkte = ebene[3] if len(ebene) > 3 else None
+                haelften, n = schneide(t, ebene[:2], duebel, log, fenster, punkte)
                 neu += haelften
                 zaehler += n
             else:
