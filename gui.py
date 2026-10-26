@@ -9,7 +9,7 @@ import numpy as np
 import pyvista as pv
 import trimesh
 from pyvistaqt import QtInteractor
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import profile_speicher as profile
 import stl_schneider as kern
@@ -42,7 +42,8 @@ class Fenster(QtWidgets.QMainWindow):
         self.mesh = None          # trimesh des geladenen Modells
         self.pfad = None
         self.ebene = None         # aktuelle Ebene des Widgets (punkt, normale)
-        self.schnitte = []        # hinzugefügte Ebenen
+        self.schnitte = []        # hinzugefügte Schnitte: dict(punkt, normale, fenster, punkte, text)
+        self.verlauf, self.zukunft = [], []  # für Rückgängig / Wiederholen
         self.ebene_widget = None
         self.lagen = {}           # Teil-Index -> 4x4-Matrix, von Hand im Bauraum platziert
         self.teil_akteur = None
@@ -81,6 +82,11 @@ class Fenster(QtWidgets.QMainWindow):
         rechts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.ansicht = QtInteractor(rechts)
         self.ansicht.set_background("white")
+        # Rechtsklick ohne Ziehen setzt Verbinder; Rechts ziehen bleibt Zoomen.
+        # Hohe Priorität, damit der Druck vor der Kamera-Steuerung ankommt.
+        self._rechts_druck = None
+        self.ansicht.iren.interactor.AddObserver("RightButtonPressEvent", self._rechts_gedrueckt, 10.0)
+        self.ansicht.iren.add_observer("RightButtonReleaseEvent", self._rechts_losgelassen)
         rechts.addWidget(self.ansicht.interactor)
         self.protokoll = QtWidgets.QPlainTextEdit()
         self.protokoll.setReadOnly(True)
@@ -184,11 +190,40 @@ class Fenster(QtWidgets.QMainWindow):
         m.addLayout(zeile)
         self.liste = QtWidgets.QListWidget()
         self.liste.setMaximumHeight(110)
+        self.liste.currentRowChanged.connect(lambda _: self._zeichne_schnitte(True))
         m.addWidget(self.liste)
+        zeile = QtWidgets.QHBoxLayout()
+        self.k_zurueck = QtWidgets.QPushButton("↶ Rückgängig")
+        self.k_zurueck.setToolTip("Strg+Z")
+        self.k_zurueck.clicked.connect(self._rueckgaengig)
+        zeile.addWidget(self.k_zurueck)
+        self.k_vor = QtWidgets.QPushButton("↷ Wiederholen")
+        self.k_vor.setToolTip("Strg+Y")
+        self.k_vor.clicked.connect(self._wiederholen)
+        zeile.addWidget(self.k_vor)
+        m.addLayout(zeile)
+        hilfe = QtWidgets.QLabel("Verbinder: Schnitt in der Liste wählen. Rechtsklick auf die Schnittfläche setzt "
+                                 "einen Verbinder, Rechtsklick auf einen Verbinder entfernt ihn. "
+                                 "Blau = automatisch, orange = selbst gesetzt.")
+        hilfe.setWordWrap(True)
+        hilfe.setStyleSheet("color: #555;")
+        m.addWidget(hilfe)
+        QtWidgets.QShortcut(QtGui.QKeySequence.Undo, self, self._rueckgaengig)
+        QtWidgets.QShortcut(QtGui.QKeySequence.Redo, self, self._wiederholen)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self, self._wiederholen)
         form.addRow(self.manuell_box)
 
-        # Dübel
-        gruppe, form = self._gruppe(spalte, "Dübel")
+        # Verbinder
+        gruppe, form = self._gruppe(spalte, "Verbinder")
+        self.d_art = QtWidgets.QComboBox()
+        for art, name in kern.VERBINDER_ARTEN.items():
+            self.d_art.addItem(name, art)
+        self.d_art.currentIndexChanged.connect(self._art_gewaehlt)
+        form.addRow("Art", self.d_art)
+        self.d_art_info = QtWidgets.QLabel("")
+        self.d_art_info.setWordWrap(True)
+        self.d_art_info.setStyleSheet("color: #555;")
+        form.addRow(self.d_art_info)
         self.d_anzahl = QtWidgets.QSpinBox()
         self.d_anzahl.setRange(0, 8)
         self.d_anzahl.setValue(2)
@@ -197,11 +232,17 @@ class Fenster(QtWidgets.QMainWindow):
         self.d_spiel = self._zahl(0.2, 0, 2, 2, schritt=0.05)
         form.addRow("Anzahl pro Schnitt", self.d_anzahl)
         form.addRow("Durchmesser mm", self.d_durchmesser)
-        form.addRow("Tiefe je Seite mm", self.d_tiefe)
+        self.d_tiefe_label = QtWidgets.QLabel("Tiefe je Seite mm")
+        form.addRow(self.d_tiefe_label, self.d_tiefe)
         form.addRow("Spiel mm", self.d_spiel)
         self.d_drucken = QtWidgets.QCheckBox("Dübel mitdrucken")
         self.d_drucken.setChecked(True)
         form.addRow(self.d_drucken)
+        for feld in (self.d_anzahl, self.d_durchmesser, self.d_spiel):
+            feld.valueChanged.connect(lambda *_: self._zeichne_schnitte(True))
+        self._art_werte = {}  # merkt sich Maße je Art beim Umschalten
+        self._art_alt = "duebel"
+        self._art_gewaehlt()
 
         # Ansicht
         gruppe, form = self._gruppe(spalte, "Ansicht")
@@ -324,7 +365,9 @@ class Fenster(QtWidgets.QMainWindow):
                           + ("" if self.mesh.is_watertight else "\nAchtung: Modell ist nicht geschlossen"))
         self.modell_pv = zu_pyvista(self.mesh)
         self.schnitte.clear()
-        self.liste.clear()
+        self.verlauf.clear()
+        self.zukunft.clear()
+        self._liste_aktualisieren()
         self.ergebnis = None
         self.ebene = (self.mesh.bounds.mean(axis=0), np.array([0.0, 0.0, 1.0]))
         groesse = round(float(np.max(self.mesh.extents)) / 3)
@@ -364,17 +407,121 @@ class Fenster(QtWidgets.QMainWindow):
         self.ansicht.add_mesh(box, style="wireframe", color="#2b8a3e", line_width=1, name="bauraum",
                               opacity=0.6, pickable=False)
 
-    def _zeichne_schnitte(self):
+    def _zeichne_schnitte(self, neu_rendern=False):
+        if self.mesh is None or self.ergebnis is not None:
+            return
         groesse = float(np.linalg.norm(self.mesh.extents)) * 1.1
-        for i in range(50):
-            self.ansicht.remove_actor(f"schnitt{i}")
-        for i, schnitt in enumerate(self.schnitte):
-            punkt, normale = schnitt[0], schnitt[1]
-            if len(schnitt) > 2:
-                flaeche = self._rechteck(schnitt[2])
+        for name in list(self.ansicht.actors):
+            if name.startswith(("schnitt", "insel", "verbinder")):
+                self.ansicht.remove_actor(name)
+        gewaehlt = self.liste.currentRow()
+        for i, s in enumerate(self.schnitte):
+            if s["fenster"] is not None:
+                flaeche = self._rechteck(s["fenster"])
             else:
-                flaeche = pv.Plane(center=punkt, direction=normale, i_size=groesse, j_size=groesse)
-            self.ansicht.add_mesh(flaeche, color=SCHNITTFARBE, opacity=0.25, name=f"schnitt{i}", pickable=False)
+                flaeche = pv.Plane(center=s["punkt"], direction=s["normale"], i_size=groesse, j_size=groesse)
+            aktiv = i == gewaehlt
+            self.ansicht.add_mesh(flaeche, color=SCHNITTFARBE, opacity=0.35 if aktiv else 0.2, name=f"schnitt{i}",
+                                  pickable=aktiv)
+        # Beim gewählten Schnitt nur die Hälfte hinter der Ebene zeigen, damit Schnittfläche und Verbinder sichtbar sind
+        if 0 <= gewaehlt < len(self.schnitte) and self.manuell.isChecked():
+            s = self.schnitte[gewaehlt]
+            # Die Hälfte auf der von der Kamera abgewandten Seite behalten
+            kamera = np.array(self.ansicht.camera.position)
+            hinten = bool(np.dot(kamera - s["punkt"], s["normale"]) > 0)
+            schluessel = (gewaehlt, tuple(s["punkt"]), tuple(s["normale"]), hinten)
+            if getattr(self, "_halb_schluessel", None) != schluessel:
+                self._halb = self.modell_pv.clip(normal=s["normale"], origin=s["punkt"], invert=hinten)
+                self._halb_schluessel = schluessel
+            self.ansicht.add_mesh(self._halb, color=MODELLFARBE, smooth_shading=True, name="modell", pickable=False)
+            self._zeichne_verbinder(s)
+        else:
+            self.ansicht.add_mesh(self.modell_pv, color=MODELLFARBE, smooth_shading=True, name="modell",
+                                  pickable=False)
+        if neu_rendern:
+            self.ansicht.render()
+
+    def _zeichne_verbinder(self, s):
+        """Umriss der Schnittflächen und die geplanten Verbinder des gewählten Schnitts."""
+        e = self._einstellungen()
+        inseln = kern.querschnitt(self.mesh, (s["punkt"], s["normale"]), e["duebel"], s["fenster"], s["punkte"])
+        for k, insel in enumerate(inseln):
+            flaeche = pv.PolyData(insel.rand[:-1], faces=[len(insel.rand) - 1] + list(range(len(insel.rand) - 1)))
+            self.ansicht.add_mesh(flaeche.triangulate(), color="#ffd8a8" if insel.gewaehlt else "#dee2e6",
+                                  name=f"insel{k}", pickable=False)
+            linie = pv.lines_from_points(np.vstack([insel.rand, insel.rand[:1]]))
+            self.ansicht.add_mesh(linie, color=SCHNITTFARBE if insel.gewaehlt else "#868e96", line_width=3,
+                                  name=f"inselrand{k}", pickable=False)
+            r = (e["duebel"].durchmesser / 2) if e["duebel"] else 3
+            for j, p in enumerate(insel.verbinder):
+                kugel = pv.Sphere(radius=r, center=p)
+                self.ansicht.add_mesh(kugel, color="#e8590c" if insel.manuell else "#1971c2",
+                                      name=f"verbinder{k}_{j}", pickable=False)
+
+    def _rechts_gedrueckt(self, *_):
+        self._rechts_druck = self.ansicht.iren.interactor.GetEventPosition()
+
+    def _rechts_losgelassen(self, *_):
+        if self._rechts_druck is None:
+            return
+        x0, y0 = self._rechts_druck
+        x, y = self.ansicht.iren.interactor.GetEventPosition()
+        self._rechts_druck = None
+        if abs(x - x0) + abs(y - y0) <= 4:
+            self._rechtsklick()
+
+    def _rechtsklick(self, *_):
+        """Setzt oder entfernt einen Verbinder auf der Schnittfläche des gewählten Schnitts."""
+        i = self.liste.currentRow()
+        if self.ergebnis is not None or not self.manuell.isChecked() or not 0 <= i < len(self.schnitte):
+            return
+        akteur = self.ansicht.actors.get(f"schnitt{i}")
+        if akteur is None:
+            return
+        import vtk
+        x, y = self.ansicht.iren.interactor.GetEventPosition()
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.0005)
+        picker.PickFromListOn()
+        picker.AddPickList(akteur)
+        if not picker.Pick(x, y, 0, self.ansicht.renderer):
+            return
+        self._verbinder_umschalten(i, np.array(picker.GetPickPosition()))
+
+    def _verbinder_umschalten(self, i, p):
+        s = self.schnitte[i]
+        n = s["normale"] / np.linalg.norm(s["normale"])
+        p = p - n * np.dot(p - s["punkt"], n)  # genau in die Ebene legen
+        e = self._einstellungen()
+        if e["duebel"] is None:
+            self._log("Verbinder-Anzahl ist 0, es werden keine Verbinder gesetzt.")
+            return
+        r = e["duebel"].durchmesser
+        inseln = kern.querschnitt(self.mesh, (s["punkt"], n), e["duebel"], s["fenster"], s["punkte"])
+        self._merken()
+        eigene = [q for q in s["punkte"] if np.linalg.norm(q - p) > r]
+        if len(eigene) < len(s["punkte"]):
+            s["punkte"] = eigene  # Klick auf einen eigenen Verbinder: entfernen
+        else:
+            # Klick auf einen automatischen Verbinder einer Insel: alle automatischen dieser Insel übernehmen,
+            # außer dem angeklickten. Sonst einen neuen Verbinder setzen.
+            for insel in inseln:
+                if insel.manuell or not insel.verbinder:
+                    continue
+                naehe = [np.linalg.norm(q - p) for q in insel.verbinder]
+                if min(naehe) <= r:
+                    rest = [q for q, d in zip(insel.verbinder, naehe) if d > r]
+                    if not rest:
+                        self.verlauf.pop()
+                        self._log("Eine Schnittfläche behält mindestens einen Verbinder. "
+                                  "Für ganz ohne Verbinder die Anzahl auf 0 stellen.")
+                        return
+                    s["punkte"] = eigene + rest
+                    break
+            else:
+                s["punkte"] = eigene + [p]
+        self._liste_aktualisieren()
+        self._zeichne_schnitte(True)
 
     def _plane_widget(self):
         self.ansicht.clear_plane_widgets()
@@ -605,28 +752,92 @@ class Fenster(QtWidgets.QMainWindow):
         punkt, n = self.ebene
         n = n / np.linalg.norm(n)
         f = self._fenster(punkt, n)
-        self.schnitte.append((punkt.copy(), n.copy(), f) if f else (punkt.copy(), n.copy()))
         text = self.ebene_info.text().replace("Ebene ", "Schnitt ")
         if f:
             text += f", Fenster {f.breite:.0f} × {f.hoehe:.0f} mm"
-        self.liste.addItem(text)
-        self._zeichne_schnitte()
-        self.ansicht.render()
+        self._merken()
+        self.schnitte.append(dict(punkt=punkt.copy(), normale=n.copy(), fenster=f, punkte=[], text=text))
+        self._liste_aktualisieren(len(self.schnitte) - 1)
+        self._zeichne_schnitte(True)
 
     def _schnitt_weg(self):
-        for eintrag in self.liste.selectedItems():
-            i = self.liste.row(eintrag)
-            self.liste.takeItem(i)
-            del self.schnitte[i]
-        self._zeichne_schnitte()
-        self.ansicht.render()
+        i = self.liste.currentRow()
+        if not 0 <= i < len(self.schnitte):
+            return
+        self._merken()
+        del self.schnitte[i]
+        self._liste_aktualisieren(min(i, len(self.schnitte) - 1))
+        self._zeichne_schnitte(True)
+
+    def _liste_aktualisieren(self, auswahl=None):
+        if auswahl is None:
+            auswahl = self.liste.currentRow()
+        self.liste.blockSignals(True)
+        self.liste.clear()
+        for s in self.schnitte:
+            self.liste.addItem(s["text"] + (f", {len(s['punkte'])} eigene Verbinder" if s["punkte"] else ""))
+        if self.schnitte:
+            self.liste.setCurrentRow(max(0, min(auswahl, len(self.schnitte) - 1)))
+        self.liste.blockSignals(False)
+        self.k_zurueck.setEnabled(bool(self.verlauf))
+        self.k_vor.setEnabled(bool(self.zukunft))
+
+    # ---------- Rückgängig ----------
+
+    @staticmethod
+    def _kopie(schnitte):
+        return [dict(s, punkte=[np.array(p) for p in s["punkte"]]) for s in schnitte]
+
+    def _merken(self):
+        self.verlauf.append(self._kopie(self.schnitte))
+        del self.verlauf[:-100]
+        self.zukunft.clear()
+
+    def _rueckgaengig(self):
+        if not self.verlauf or self.ergebnis is not None:
+            return
+        self.zukunft.append(self._kopie(self.schnitte))
+        self.schnitte = self.verlauf.pop()
+        self._liste_aktualisieren()
+        self._zeichne_schnitte(True)
+
+    def _wiederholen(self):
+        if not self.zukunft or self.ergebnis is not None:
+            return
+        self.verlauf.append(self._kopie(self.schnitte))
+        self.schnitte = self.zukunft.pop()
+        self._liste_aktualisieren()
+        self._zeichne_schnitte(True)
+
+    VERBINDER_VORGABEN = {"duebel": (6.0, 10.0, 0.2), "zapfen": (8.0, 8.0, 0.3), "magnet": (6.0, 3.0, 0.2)}
+    VERBINDER_TEXTE = {
+        "duebel": ("Tiefe je Seite mm", "Löcher in beiden Hälften, die Dübel werden extra gedruckt."),
+        "zapfen": ("Zapfenlänge mm", "Zapfen an der größeren Hälfte angeformt, passendes Loch in der anderen. "
+                                    "Kein Extrateil, aber diese Hälfte kann nicht auf der Schnittfläche liegen."),
+        "magnet": ("Magnethöhe mm", "Löcher für Scheibenmagnete (Durchmesser × Höhe des Magneten) in beiden Hälften. "
+                                   "Magnete einkleben und auf die Polung achten."),
+    }
+
+    def _art_gewaehlt(self, *_):
+        art = self.d_art.currentData()
+        self._art_werte[self._art_alt] = (self.d_durchmesser.value(), self.d_tiefe.value(), self.d_spiel.value())
+        werte = self._art_werte.get(art, self.VERBINDER_VORGABEN[art])
+        for feld, w in zip((self.d_durchmesser, self.d_tiefe, self.d_spiel), werte):
+            feld.setValue(w)
+        self._art_alt = art
+        label, info = self.VERBINDER_TEXTE[art]
+        self.d_tiefe_label.setText(label)
+        self.d_art_info.setText(info)
+        self.d_drucken.setVisible(art == "duebel")
 
     def _einstellungen(self):
         duebel = None
         if self.d_anzahl.value() > 0:
             duebel = kern.Duebel(self.d_anzahl.value(), self.d_durchmesser.value(), self.d_tiefe.value(),
-                                 self.d_spiel.value(), drucken=self.d_drucken.isChecked())
-        return dict(auto=self.auto.isChecked(), schnitte=list(self.schnitte),
+                                 self.d_spiel.value(), drucken=self.d_drucken.isChecked(),
+                                 art=self.d_art.currentData())
+        schnitte = [(s["punkt"], s["normale"], s["fenster"], s["punkte"] or None) for s in self.schnitte]
+        return dict(auto=self.auto.isChecked(), schnitte=schnitte,
                     bauraum=[f.value() for f in self.bauraum], duebel=duebel)
 
     def _berechnen(self):
@@ -664,7 +875,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.ergebnis = ergebnis
         self._knoepfe()
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
-        self._log(f"{len(teile)} Teile, {n} Dübel. {passt} von {len(teile)} passen auf die Platte. "
+        self._log(f"{len(teile)} Teile, {n} Verbinder. {passt} von {len(teile)} passen auf die Platte. "
                   "Mit „Speichern …“ ausgeben.")
         self.lagen = {}
         self.huellen = [t.convex_hull.vertices if len(t.vertices) > 2000 else t.vertices for t in teile]
@@ -824,6 +1035,7 @@ class Fenster(QtWidgets.QMainWindow):
     def _speichern(self, ordner=None):
         if self.ergebnis is None:
             return
+        gewaehlt = not ordner
         if not ordner:
             ordner = QtWidgets.QFileDialog.getExistingDirectory(self, "Ausgabeordner wählen", str(self.pfad.parent))
         if not ordner:
@@ -840,12 +1052,44 @@ class Fenster(QtWidgets.QMainWindow):
             return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
-        if hasattr(os, "startfile"):
+        if gewaehlt and hasattr(os, "startfile"):
             os.startfile(ziel)
+
+
+def selbsttest(app):
+    """Kompletter Durchlauf ohne Klicks, z.B. um die fertige .exe zu prüfen: --selbsttest"""
+    import tempfile
+
+    import trimesh
+
+    with tempfile.TemporaryDirectory() as ordner:
+        modell = Path(ordner) / "zylinder.stl"
+        trimesh.creation.cylinder(radius=60, height=500).export(modell)
+        f = Fenster()
+        f.show()
+        f._oeffnen(str(modell))
+        ergebnisse = []
+        f.signale.fertig.disconnect()
+        f.signale.fertig.connect(ergebnisse.append)
+        f._arbeite(f._einstellungen())
+        app.processEvents()
+        if not ergebnisse:
+            print("Selbsttest: Berechnung fehlgeschlagen")
+            return 1
+        f._berechnet(ergebnisse[0])
+        f.teile_liste.setCurrentRow(0)
+        f._in_bauraum()
+        f._speichern(ordner)
+        dateien = sorted(p.name for p in (Path(ordner) / "zylinder_teile").iterdir())
+        print("Selbsttest:", ", ".join(dateien))
+        f.close()
+        return 0 if "zylinder_teile.3mf" in dateien and len(dateien) == 4 else 1
 
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    if "--selbsttest" in sys.argv:
+        sys.exit(selbsttest(app))
     fenster = Fenster()
     fenster.show()
     if len(sys.argv) > 1:
