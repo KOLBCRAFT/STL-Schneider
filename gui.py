@@ -12,6 +12,7 @@ from pyvistaqt import QtInteractor
 from qtpy import QtCore, QtGui, QtWidgets
 
 import bambu_studio
+import design
 import profile_speicher as profile
 import stl_schneider as kern
 
@@ -22,10 +23,68 @@ PASST_TOENE = (PASST_FARBE, "#2b8a3e")
 ZU_GROSS_TOENE = (ZU_GROSS_FARBE, "#c92a2a")
 MODELLFARBE = "#adb5bd"
 SCHNITTFARBE = "#d9480f"
+SCHRITTE = ("Modell", "Schneiden", "Verbinder", "Teile", "Ausgabe")
 
 
 def zu_pyvista(mesh):
     return pv.PolyData.from_regular_faces(np.asarray(mesh.vertices), np.asarray(mesh.faces))
+
+
+def raster(x0, y0, z, breite, tiefe, abstand=25.0):
+    """Linien im Abstand von abstand mm auf der Druckplatte, wie in Bambu Studio."""
+    punkte, linien = [], []
+    for x in np.arange(0, breite + 1e-6, abstand):
+        punkte += [(x0 + x, y0, z), (x0 + x, y0 + tiefe, z)]
+    for y in np.arange(0, tiefe + 1e-6, abstand):
+        punkte += [(x0, y0 + y, z), (x0 + breite, y0 + y, z)]
+    for i in range(0, len(punkte), 2):
+        linien += [2, i, i + 1]
+    return pv.PolyData(np.array(punkte, float), lines=np.array(linien))
+
+
+def vorschaubild(teil, farbe, passt, groesse=128):
+    """Kleines Bild des Teils (schräg von oben) mit grünem oder rotem Punkt in der Ecke.
+
+    Gerechnet mit numpy aus Punkten auf der Oberfläche, damit kein zweites OpenGL-Fenster nötig ist.
+    """
+    try:
+        punkte, flaechen = trimesh.sample.sample_surface(teil, 30000)
+        normalen = teil.face_normals[flaechen]
+    except Exception:
+        return None
+    blick = -np.ones(3) / np.sqrt(3)                       # von der Kamera (+1,+1,+1) zur Mitte
+    rechts = np.cross(blick, [0, 0, 1.0])
+    rechts /= np.linalg.norm(rechts)
+    hoch = np.cross(rechts, blick)
+    licht = -blick + 0.6 * hoch
+    licht /= np.linalg.norm(licht)
+    x, y, tiefe = punkte @ rechts, punkte @ hoch, punkte @ -blick
+    rand = 6
+    massstab = (groesse - 2 * rand) / max(np.ptp(x), np.ptp(y), 1e-6)
+    ix = ((x - (x.min() + x.max()) / 2) * massstab + groesse / 2).astype(int)
+    iy = (groesse / 2 - (y - (y.min() + y.max()) / 2) * massstab).astype(int)
+    grund = np.array(QtGui.QColor(farbe).getRgb()[:3], float)
+    hell = 0.35 + 0.65 * np.clip(normalen @ licht, 0, 1)
+    farben = np.clip(grund[None, :] * hell[:, None], 0, 255).astype(np.uint8)
+    bild = np.zeros((groesse, groesse, 4), np.uint8)
+    reihenfolge = np.argsort(tiefe)                        # nahe Punkte zuletzt, sie übermalen die fernen
+    for dx in (0, 1):
+        for dy in (0, 1):
+            px = np.clip(ix[reihenfolge] + dx, 0, groesse - 1)
+            py = np.clip(iy[reihenfolge] + dy, 0, groesse - 1)
+            bild[py, px, :3] = farben[reihenfolge]
+            bild[py, px, 3] = 255
+    bild = np.ascontiguousarray(bild)
+    h, w = bild.shape[:2]
+    qbild = QtGui.QImage(bild.data, w, h, 4 * w, QtGui.QImage.Format_RGBA8888).copy()
+    maler = QtGui.QPainter(qbild)
+    maler.setRenderHint(QtGui.QPainter.Antialiasing)
+    maler.setPen(QtGui.QPen(QtGui.QColor("white"), 3))
+    maler.setBrush(QtGui.QColor(PASST_FARBE if passt else ZU_GROSS_FARBE))
+    r = groesse // 7
+    maler.drawEllipse(w - 2 * r - 4, 4, 2 * r, 2 * r)
+    maler.end()
+    return QtGui.QIcon(QtGui.QPixmap.fromImage(qbild))
 
 
 class Signale(QtCore.QObject):
@@ -66,45 +125,92 @@ class Fenster(QtWidgets.QMainWindow):
         teiler = QtWidgets.QSplitter()
         self.setCentralWidget(teiler)
 
-        links = QtWidgets.QWidget()
-        spalte = QtWidgets.QVBoxLayout(links)
-        rollen = QtWidgets.QScrollArea()
-        rollen.setWidgetResizable(True)
-        rollen.setWidget(links)
-        rollen.setMinimumWidth(390)
-        self.rollen = rollen
+        # Links: Arbeitsschritte als Reiter, darunter je Schritt eine eigene, rollbare Seite
         linke_seite = QtWidgets.QWidget()
+        linke_seite.setMinimumWidth(390)
         lv = QtWidgets.QVBoxLayout(linke_seite)
         lv.setContentsMargins(0, 0, 0, 0)
-        lv.addWidget(rollen, 1)
+        lv.setSpacing(0)
+        reiter = QtWidgets.QHBoxLayout()
+        reiter.setContentsMargins(6, 4, 6, 0)
+        reiter.setSpacing(0)
+        lv.addLayout(reiter)
+        self.seiten = QtWidgets.QStackedWidget()
+        lv.addWidget(self.seiten, 1)
+        self.schritt_knoepfe = QtWidgets.QButtonGroup(self)
+        self.schritt_knoepfe.setExclusive(True)
+        self.rollen_je_schritt, spalten = [], []
+        for nr, titel in enumerate(SCHRITTE):
+            k = QtWidgets.QToolButton()
+            k.setText(f"{nr + 1}  {titel}")
+            k.setCheckable(True)
+            k.setProperty("rolle", "schritt")
+            k.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            self.schritt_knoepfe.addButton(k, nr)
+            reiter.addWidget(k)
+            inhalt = QtWidgets.QWidget()
+            spalten.append(QtWidgets.QVBoxLayout(inhalt))
+            rollen = QtWidgets.QScrollArea()
+            rollen.setWidgetResizable(True)
+            rollen.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            rollen.setWidget(inhalt)
+            self.rollen_je_schritt.append(rollen)
+            self.seiten.addWidget(rollen)
+        self.schritt_knoepfe.idClicked.connect(self._schritt)
+        self.schritt_knoepfe.button(0).setChecked(True)
         unten = QtWidgets.QVBoxLayout()
         unten.setContentsMargins(8, 4, 8, 8)
         lv.addLayout(unten)
         teiler.addWidget(linke_seite)
 
-        rechts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        self.ansicht = QtInteractor(rechts)
-        self.ansicht.set_background("white")
+        oben = QtWidgets.QWidget()
+        ov = QtWidgets.QVBoxLayout(oben)
+        ov.setContentsMargins(0, 0, 0, 0)
+        ov.setSpacing(0)
+        self.werkzeuge = QtWidgets.QToolBar()
+        ov.addWidget(self.werkzeuge)
+        self.ansicht = QtInteractor(oben)
         # Rechtsklick ohne Ziehen setzt Verbinder; Rechts ziehen bleibt Zoomen.
         # Hohe Priorität, damit der Druck vor der Kamera-Steuerung ankommt.
         self._rechts_druck = None
         self.ansicht.iren.interactor.AddObserver("RightButtonPressEvent", self._rechts_gedrueckt, 10.0)
         self.ansicht.iren.add_observer("RightButtonReleaseEvent", self._rechts_losgelassen)
-        rechts.addWidget(self.ansicht.interactor)
+        ov.addWidget(self.ansicht.interactor, 1)
+        # Statuszeile mit der letzten Meldung, darunter das einklappbare Protokoll
+        status = QtWidgets.QHBoxLayout()
+        status.setContentsMargins(8, 3, 4, 3)
+        self.status = QtWidgets.QLabel("Modell öffnen oder STL-Datei ins Fenster ziehen.")
+        self.status.setProperty("rolle", "hinweis")
+        status.addWidget(self.status, 1)
+        self.k_protokoll = QtWidgets.QToolButton()
+        self.k_protokoll.setText("Protokoll ▴")
+        self.k_protokoll.setCheckable(True)
+        self.k_protokoll.toggled.connect(self._protokoll_zeigen)
+        status.addWidget(self.k_protokoll)
+        ov.addLayout(status)
         self.protokoll = QtWidgets.QPlainTextEdit()
         self.protokoll.setReadOnly(True)
-        rechts.addWidget(self.protokoll)
-        rechts.setStretchFactor(0, 1)
-        rechts.setSizes([760, 140])
-        teiler.addWidget(rechts)
+        self.protokoll.setMaximumHeight(200)
+        self.protokoll.setVisible(False)
+        ov.addWidget(self.protokoll)
+        teiler.addWidget(oben)
         teiler.setStretchFactor(1, 1)
-        teiler.setSizes([410, 990])
+        teiler.setSizes([430, 970])
+        self.setAcceptDrops(True)
 
         # Modell
+        spalte = spalten[0]
         gruppe, form = self._gruppe(spalte, "Modell")
+        zeile = QtWidgets.QHBoxLayout()
         knopf = QtWidgets.QPushButton("Öffnen …")
+        knopf.setToolTip("STL, 3MF oder OBJ öffnen. Dateien lassen sich auch einfach ins Fenster ziehen.")
         knopf.clicked.connect(self._oeffnen)
-        form.addRow(knopf)
+        zeile.addWidget(knopf, 1)
+        self.k_zuletzt = QtWidgets.QPushButton("Zuletzt ▾")
+        self.zuletzt_menue = QtWidgets.QMenu(self)
+        self.k_zuletzt.setMenu(self.zuletzt_menue)
+        zeile.addWidget(self.k_zuletzt)
+        form.addRow(zeile)
         self.info = QtWidgets.QLabel("Noch keine Datei geladen")
         self.info.setWordWrap(True)
         form.addRow(self.info)
@@ -155,8 +261,10 @@ class Fenster(QtWidgets.QMainWindow):
         zeile.addWidget(self.k_profil_loeschen)
         form.addRow(zeile)
         self._profile_fuellen(self.einstellungen.get("letztes_profil", kern.STANDARD_DRUCKER))
+        self._zuletzt_fuellen()
 
         # Schneiden
+        spalte = spalten[1]
         gruppe, form = self._gruppe(spalte, "Schneiden")
         self.auto = QtWidgets.QRadioButton("Automatisch (an dünnen Stellen)")
         self.manuell = QtWidgets.QRadioButton("Manuell (eigene Schnitte)")
@@ -230,7 +338,7 @@ class Fenster(QtWidgets.QMainWindow):
                                  "einen Verbinder, Rechtsklick auf einen Verbinder entfernt ihn. "
                                  "Blau = automatisch, orange = selbst gesetzt.")
         hilfe.setWordWrap(True)
-        hilfe.setStyleSheet("color: #555;")
+        hilfe.setProperty("rolle", "hinweis")
         m.addWidget(hilfe)
         QtWidgets.QShortcut(QtGui.QKeySequence.Undo, self, self._rueckgaengig)
         QtWidgets.QShortcut(QtGui.QKeySequence.Redo, self, self._wiederholen)
@@ -238,6 +346,7 @@ class Fenster(QtWidgets.QMainWindow):
         form.addRow(self.manuell_box)
 
         # Verbinder
+        spalte = spalten[2]
         gruppe, form = self._gruppe(spalte, "Verbinder")
         self.d_art = QtWidgets.QComboBox()
         for art, name in kern.VERBINDER_ARTEN.items():
@@ -246,7 +355,7 @@ class Fenster(QtWidgets.QMainWindow):
         form.addRow("Art", self.d_art)
         self.d_art_info = QtWidgets.QLabel("")
         self.d_art_info.setWordWrap(True)
-        self.d_art_info.setStyleSheet("color: #555;")
+        self.d_art_info.setProperty("rolle", "hinweis")
         form.addRow(self.d_art_info)
         self.d_anzahl = QtWidgets.QSpinBox()
         self.d_anzahl.setRange(0, 8)
@@ -269,6 +378,7 @@ class Fenster(QtWidgets.QMainWindow):
         self._art_gewaehlt()
 
         # Ansicht
+        spalte = spalten[0]
         gruppe, form = self._gruppe(spalte, "Ansicht")
         hilfe = QtWidgets.QLabel("Linke Maustaste drehen, Mausrad zoomen, mittlere Taste "
                                  "(oder Umschalt + links) verschieben.")
@@ -286,13 +396,21 @@ class Fenster(QtWidgets.QMainWindow):
         self.maus3d_takt.timeout.connect(self._maus3d_schritt)
 
         # Teile im Bauraum testen
+        spalte = spalten[3]
+        self.teile_leer = QtWidgets.QLabel("Noch keine Teile. Erst unten auf „Teile berechnen“ klicken.")
+        self.teile_leer.setWordWrap(True)
+        self.teile_leer.setProperty("rolle", "hinweis")
+        spalte.addWidget(self.teile_leer)
         self.teile_gruppe, form = self._gruppe(spalte, "Teile im Bauraum testen")
         hilfe = QtWidgets.QLabel("Grün = passt in den Bauraum, rot = zu groß. Teil wählen und in den Bauraum legen. Dann mit den Pfeilen verschieben "
                                  "und mit den Ringen drehen. Die Lage wird beim Speichern übernommen.")
         hilfe.setWordWrap(True)
         form.addRow(hilfe)
         self.teile_liste = QtWidgets.QListWidget()
-        self.teile_liste.setMaximumHeight(130)
+        self.teile_liste.setIconSize(QtCore.QSize(64, 64))
+        self.teile_liste.setSpacing(2)
+        self.teile_liste.setMinimumHeight(220)
+        self.teile_liste.setMaximumHeight(320)
         self.teile_liste.currentRowChanged.connect(self._teil_gewaehlt)
         form.addRow(self.teile_liste)
         zeile = QtWidgets.QHBoxLayout()
@@ -343,6 +461,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.teile_gruppe.setVisible(False)
 
         # Ausgabe
+        spalte = spalten[4]
         gruppe, form = self._gruppe(spalte, "Ausgabe")
         self.dreimf = QtWidgets.QCheckBox("3MF für Bambu Studio")
         self.dreimf.setChecked(True)
@@ -369,15 +488,88 @@ class Fenster(QtWidgets.QMainWindow):
         self.k_bambu = QtWidgets.QPushButton("In Bambu Studio öffnen")
         self.k_bambu.setToolTip("Speichert die Teile neben dem Modell und öffnet die 3MF in Bambu Studio")
         self.k_bambu.clicked.connect(self._in_bambu)
-        for k in (self.k_berechnen, self.k_modell, self.k_speichern, self.k_bambu):
+        unten.addWidget(self.k_berechnen)
+        zeile = QtWidgets.QHBoxLayout()
+        zeile.addWidget(self.k_modell)
+        zeile.addWidget(self.k_speichern)
+        unten.addLayout(zeile)
+        unten.addWidget(self.k_bambu)
+        for k in (self.k_modell, self.k_speichern):
             k.setMinimumHeight(32)
-            unten.addWidget(k)
-        spalte.addStretch(1)
+        for k in (self.k_berechnen, self.k_bambu):
+            k.setProperty("rolle", "haupt")
+            k.setMinimumHeight(40)
+        for spalte in spalten:
+            spalte.addStretch(1)
+        self._baue_werkzeuge()
 
         self._modus_gewaehlt()
         self._bambu_anzeigen()
+        self._design(self.einstellungen.get("design", "dunkel"))
         self._knoepfe()
         QtCore.QTimer.singleShot(0, lambda: self.maus3d.setChecked(True))
+
+    def _baue_werkzeuge(self):
+        w = self.werkzeuge
+        w.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+
+        def aktion(text, tipp, funktion, umschalter=False):
+            a = w.addAction(text)
+            a.setToolTip(tipp)
+            a.setCheckable(umschalter)
+            a.triggered.connect(funktion)
+            return a
+
+        p = self.ansicht
+        aktion("◇ Iso", "Schräg von oben", lambda: self._kamera(p.view_isometric))
+        aktion("Vorn", "Ansicht von vorn", lambda: self._kamera(p.view_xz))
+        aktion("Seite", "Ansicht von rechts", lambda: self._kamera(p.view_yz))
+        aktion("Oben", "Ansicht von oben", lambda: self._kamera(p.view_xy))
+        aktion("⤢ Einpassen", "Alles ins Bild holen", lambda: self._kamera(None))
+        w.addSeparator()
+        self.a_zurueck = aktion("↶", "Schnitt rückgängig (Strg+Z)", self._rueckgaengig)
+        self.a_vor = aktion("↷", "Wiederholen (Strg+Y)", self._wiederholen)
+        w.addSeparator()
+        self.a_stuetzen = aktion("Stützen", "Überhänge, die Stützen brauchen, orange zeigen",
+                                 lambda an: self.stuetzen_an.setChecked(an), umschalter=True)
+        self.a_stuetzen.setChecked(self.stuetzen_an.isChecked())
+        self.stuetzen_an.toggled.connect(self.a_stuetzen.setChecked)
+        abstand = QtWidgets.QWidget()
+        abstand.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        w.addWidget(abstand)
+        self.a_design = aktion("☾ Dunkel", "Zwischen hellem und dunklem Design wechseln",
+                               lambda an: self._design("dunkel" if an else "hell", merken=True), umschalter=True)
+
+    def _kamera(self, ansicht):
+        if ansicht is not None:
+            ansicht()
+        self.ansicht.reset_camera()
+        self.ansicht.render()
+
+    def _design(self, name, merken=False):
+        if name not in design.FARBEN:
+            name = "dunkel"
+        app = QtWidgets.QApplication.instance()
+        design.anwenden(app, name)
+        oben, unten = design.hintergrund_3d(name)
+        self.ansicht.set_background(unten, top=oben)
+        self.a_design.blockSignals(True)
+        self.a_design.setChecked(name == "dunkel")
+        self.a_design.setText("☾ Dunkel" if name == "dunkel" else "☀ Hell")
+        self.a_design.blockSignals(False)
+        self.design_name = name
+        if merken:
+            self.einstellungen["design"] = name
+            profile.speichere(self.einstellungen)
+            # Druckplatte in den neuen Farben zeichnen
+            if self.mesh is not None and self.ergebnis is None:
+                self._zeige_modell()
+            elif getattr(self, "im_bauraum", False):
+                self._in_bauraum()
+
+    def _schritt(self, nr):
+        self.schritt_knoepfe.button(nr).setChecked(True)
+        self.seiten.setCurrentIndex(nr)
 
     def _gruppe(self, spalte, titel):
         gruppe = QtWidgets.QGroupBox(titel)
@@ -403,6 +595,47 @@ class Fenster(QtWidgets.QMainWindow):
 
     def _log(self, text):
         self.protokoll.appendPlainText(text)
+        self.status.setText(text.splitlines()[0] if text else "")
+
+    def _protokoll_zeigen(self, an):
+        self.protokoll.setVisible(an)
+        self.k_protokoll.setText("Protokoll ▾" if an else "Protokoll ▴")
+
+    # ---------- Datei ins Fenster ziehen, zuletzt geöffnet ----------
+
+    @staticmethod
+    def _modell_aus(mime):
+        for url in mime.urls() if mime.hasUrls() else []:
+            pfad = url.toLocalFile()
+            if Path(pfad).suffix.lower() in (".stl", ".3mf", ".obj"):
+                return pfad
+        return None
+
+    def dragEnterEvent(self, ereignis):
+        if self._modell_aus(ereignis.mimeData()):
+            ereignis.acceptProposedAction()
+
+    def dropEvent(self, ereignis):
+        pfad = self._modell_aus(ereignis.mimeData())
+        if pfad:
+            ereignis.acceptProposedAction()
+            self._oeffnen(pfad)
+
+    def _zuletzt_merken(self, pfad):
+        liste = [p for p in self.einstellungen.get("zuletzt", []) if p != str(pfad)]
+        self.einstellungen["zuletzt"] = [str(pfad)] + liste[:7]
+        profile.speichere(self.einstellungen)
+        self._zuletzt_fuellen()
+
+    def _zuletzt_fuellen(self):
+        menue = self.zuletzt_menue
+        menue.clear()
+        liste = [p for p in self.einstellungen.get("zuletzt", []) if Path(p).exists()]
+        for p in liste:
+            a = menue.addAction(Path(p).name)
+            a.setToolTip(p)
+            a.triggered.connect(lambda _=False, p=p: self._oeffnen(p))
+        self.k_zuletzt.setEnabled(bool(liste))
 
     # ---------- Modell und Ansicht ----------
 
@@ -437,6 +670,7 @@ class Fenster(QtWidgets.QMainWindow):
             feld.setValue(groesse)
             feld.blockSignals(False)
         self._log(f"Geladen: {self.pfad.name}")
+        self._zuletzt_merken(self.pfad)
         self._zeige_modell()
         self.ansicht.reset_camera()
         self._knoepfe()
@@ -498,6 +732,9 @@ class Fenster(QtWidgets.QMainWindow):
         self.ergebnis = None
         self.lagen = {}
         self.teile_gruppe.setVisible(False)
+        self.teile_leer.setVisible(True)
+        if self.seiten.currentIndex() == 3:
+            self._schritt(1)
         self._entferne_teil_widget()
         self._knoepfe()
         p = self.ansicht
@@ -520,6 +757,14 @@ class Fenster(QtWidgets.QMainWindow):
         box = pv.Box(bounds=(lo[0], lo[0] + b[0], lo[1], lo[1] + b[1], lo[2], lo[2] + b[2]))
         self.ansicht.add_mesh(box, style="wireframe", color="#2b8a3e", line_width=1, name="bauraum",
                               opacity=0.6, pickable=False)
+        self._druckplatte(lo[0], lo[1], lo[2], b[0], b[1])
+
+    def _druckplatte(self, x0, y0, z, breite, tiefe):
+        farbe, linien = design.platte(getattr(self, "design_name", "dunkel"))
+        platte = pv.Plane(center=(x0 + breite / 2, y0 + tiefe / 2, z - 0.5), i_size=breite, j_size=tiefe)
+        self.ansicht.add_mesh(platte, color=farbe, opacity=0.9, name="platte", pickable=False)
+        self.ansicht.add_mesh(raster(x0, y0, z - 0.4, breite, tiefe), color=linien, line_width=1,
+                              name="raster", pickable=False)
 
     def _zeichne_schnitte(self, neu_rendern=False):
         if self.mesh is None or self.ergebnis is not None:
@@ -902,6 +1147,9 @@ class Fenster(QtWidgets.QMainWindow):
         self.liste.blockSignals(False)
         self.k_zurueck.setEnabled(bool(self.verlauf))
         self.k_vor.setEnabled(bool(self.zukunft))
+        if hasattr(self, "a_zurueck"):
+            self.a_zurueck.setEnabled(bool(self.verlauf))
+            self.a_vor.setEnabled(bool(self.zukunft))
 
     # ---------- Rückgängig ----------
 
@@ -988,6 +1236,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.k_berechnen.setText("Teile berechnen")
         self._knoepfe()
         self._log(f"FEHLER: {text}")
+        self.k_protokoll.setChecked(True)
         QtWidgets.QMessageBox.critical(self, "Fehler", text)
 
     def _berechnet(self, ergebnis):
@@ -1003,14 +1252,20 @@ class Fenster(QtWidgets.QMainWindow):
         self.teile_liste.blockSignals(True)
         self.teile_liste.clear()
         for i, t in enumerate(teile):
-            ok = "passt" if kern.passt_irgendwie(t, e["bauraum"]) else "zu groß"
+            passt = kern.passt_irgendwie(t, e["bauraum"])
             x, y, z = sorted(t.extents, reverse=True)
-            self.teile_liste.addItem(f"Teil {i + 1}: {x:.0f} × {y:.0f} × {z:.0f} mm, {ok}")
+            eintrag = QtWidgets.QListWidgetItem(f"Teil {i + 1}\n{x:.0f} × {y:.0f} × {z:.0f} mm · "
+                                                + ("passt" if passt else "zu groß"))
+            symbol = vorschaubild(t, (PASST_TOENE if passt else ZU_GROSS_TOENE)[i % 2], passt)
+            if symbol is not None:
+                eintrag.setIcon(symbol)
+            self.teile_liste.addItem(eintrag)
         self.teile_liste.setCurrentRow(0)
         self.teile_liste.blockSignals(False)
         self.teile_gruppe.setVisible(True)
+        self.teile_leer.setVisible(False)
+        self._schritt(3)
         self._zeige_teile()
-        QtCore.QTimer.singleShot(50, lambda: self.rollen.ensureWidgetVisible(self.teile_gruppe))
 
     def _zeige_teile(self):
         """Alle Teile farbig und leicht auseinandergezogen zeigen."""
@@ -1079,8 +1334,7 @@ class Fenster(QtWidgets.QMainWindow):
         p.clear()
         box = pv.Box(bounds=(0, b[0], 0, b[1], 0, b[2]))
         p.add_mesh(box, style="wireframe", color="#2b8a3e", line_width=2, name="bauraum", pickable=False)
-        platte = pv.Plane(center=(b[0] / 2, b[1] / 2, -0.5), i_size=b[0], j_size=b[1])
-        p.add_mesh(platte, color="#495057", opacity=0.5, name="platte", pickable=False)
+        self._druckplatte(0, 0, 0, b[0], b[1])
         self.teil_akteur = p.add_mesh(zu_pyvista(teil), color=PASST_FARBE,
                                       smooth_shading=True, name="teil_im_bauraum")
         self.teil_akteur.user_matrix = self.lagen[i]
@@ -1095,7 +1349,8 @@ class Fenster(QtWidgets.QMainWindow):
         p.render()
         self._pruefe_lage()
         self._zeige_ueberhang()
-        QtCore.QTimer.singleShot(50, lambda: self.rollen.ensureWidgetVisible(self.passt_info))
+        self._schritt(3)
+        QtCore.QTimer.singleShot(50, lambda: self.rollen_je_schritt[3].ensureWidgetVisible(self.passt_info))
 
     def _zeige_ueberhang(self):
         """Färbt Überhänge, die Stützen brauchen, orange und zeigt die Stützfläche an."""
