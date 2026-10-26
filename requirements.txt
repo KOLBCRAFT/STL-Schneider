@@ -6,3 +6,7 @@ manifold3d
 networkx
 lxml
 rtree
+pyvista
+pyvistaqt
+PySide6
+pywinusb; sys_platform == "win32"

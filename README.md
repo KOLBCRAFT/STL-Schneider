@@ -11,20 +11,24 @@ Löcher für gedruckte Dübel in die Schnittflächen. Voreingestellt ist der Bam
 
 ## Bedienung
 
-- **Modell öffnen**: STL, 3MF oder OBJ. Die Vorschau zeigt das Modell von vorne, von der Seite
-  und von oben, der grüne Rahmen ist der Bauraum.
+- **Modell öffnen**: STL, 3MF oder OBJ. Das Modell erscheint in der 3D-Ansicht, der grüne Rahmen
+  ist der Bauraum.
+- **Ansicht**: linke Maustaste drehen, Mausrad zoomen, mittlere Maustaste (oder Umschalt + links)
+  verschieben. Eine 3D-Maus von 3Dconnexion wird unter Windows automatisch erkannt
+  (Haken „3D-Maus verwenden“, Empfindlichkeit per Regler).
 - **Drucker**: H2D mit einer Düse (325 × 320 × 325 mm), mit beiden Düsen (300 × 320 × 325 mm),
   weitere Bambu-Drucker oder eigene Maße.
 - **Automatisch**: Schneidet nur Teile, die nicht passen, und legt jeden Schnitt an die dünnste
   Stelle im erlaubten Bereich. Probiert das Modell in Originallage und ausgerichtet und nimmt die
   Variante mit weniger Teilen.
-- **Manuell**: Achse wählen, Position mit dem Regler oder als Zahl einstellen (mm ab Unterkante
-  des Modells), „Schnitt hinzufügen“. Die Schnitte werden in der Vorschau rot angezeigt.
+- **Manuell**: Die rote Schnittebene im 3D-Fenster mit der Maus ziehen (Fläche = verschieben,
+  Pfeil = kippen). Mit ⟂ X / ⟂ Y / ⟂ Z wird sie gerade ausgerichtet, mit dem Regler verschoben.
+  „Schnitt hinzufügen“ merkt sich die Ebene, beliebig viele Schnitte sind möglich, auch schräge.
 - **Dübel**: Anzahl pro Schnittfläche, Durchmesser, Lochtiefe je Seite und Spiel. Die Dübel werden
   automatisch mit Abstand zum Rand verteilt und als eigene STL mit ausgegeben. Ist eine
   Schnittfläche zu klein, steht das im Protokoll.
-- **Ausgabe**: Jedes Teil als STL, auf die Schnittfläche gelegt, und auf Wunsch alles zusammen als
-  3MF für Bambu Studio.
+- **Teile berechnen** zeigt die Teile farbig und nummeriert, **Speichern …** schreibt jedes Teil als
+  STL (auf die Schnittfläche gelegt) und auf Wunsch alles zusammen als 3MF für Bambu Studio.
 
 ## Kommandozeile
 

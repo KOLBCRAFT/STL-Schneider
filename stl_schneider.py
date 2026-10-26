@@ -73,19 +73,24 @@ def duebel_positionen(flaeche, d: Duebel):
     return punkte
 
 
-def schneide(mesh, achse, pos, duebel: Duebel = None, log=None):
-    """Schneidet das Mesh an einer Ebene und gibt beide Hälften geschlossen zurück.
+def ebene_achse(achse, pos):
+    """Ebene senkrecht zu einer Achse (0=X, 1=Y, 2=Z) bei absoluter Position pos."""
+    normal = np.zeros(3)
+    normal[achse] = 1.0
+    return normal * pos, normal
+
+
+def schneide(mesh, ebene, duebel: Duebel = None, log=None):
+    """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt beide Hälften.
 
     Mit duebel werden Löcher in beide Schnittflächen gebohrt. Rückgabe: (hälften, anzahl_dübel).
     """
-    normal = np.zeros(3)
-    normal[achse] = 1.0
-    origin = np.zeros(3)
-    origin[achse] = pos
+    origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
+    normal = normal / np.linalg.norm(normal)
 
     loecher = []
     if duebel and duebel.anzahl > 0:
-        eben = schnitt_2d(mesh, achse, [pos])[0]
+        eben = schnitt_2d(mesh, origin, normal, [0.0])[0]
         if eben is not None:
             nach_3d = eben.metadata["to_3D"]
             for flaeche in eben.polygons_full:
@@ -126,29 +131,25 @@ def duebel_teile(anzahl, d: Duebel):
     return teile
 
 
-def auto_schnitte(mesh, bauraum, rand=3.0):
-    """Gleichmäßige Schnitte als Gitter, damit jedes Teil in den Bauraum (minus Rand) passt.
-
-    Gibt Schnitte als (achse, position ab Modell-Unterkante) zurück.
-    """
-    schnitte = []
+def gitter_ebenen(mesh, bauraum, rand=3.0):
+    """Gleichmäßiges Gitter aus Schnittebenen, damit jedes Teil in den Bauraum (minus Rand) passt."""
+    lo = mesh.bounds[0]
+    ebenen = []
     for a in range(3):
         nutzbar = bauraum[a] - 2 * rand
         laenge = mesh.extents[a]
         anzahl = max(1, math.ceil(laenge / nutzbar))
         schritt = laenge / anzahl
-        schnitte += [(a, i * schritt) for i in range(1, anzahl)]
-    return schnitte
+        ebenen += [ebene_achse(a, lo[a] + i * schritt) for i in range(1, anzahl)]
+    return ebenen
 
 
-def schnitt_2d(mesh, achse, positionen):
-    """Querschnitte (Path2D oder None) an mehreren Positionen entlang einer Achse.
+def schnitt_2d(mesh, origin, normal, hoehen):
+    """Querschnitte (Path2D oder None) in Ebenen parallel zu (origin, normal), um hoehen verschoben.
 
     section_multiplane ist hier zuverlässiger als mesh.section, das bei manchen Ebenen None liefert.
     """
-    normal = np.zeros(3)
-    normal[achse] = 1.0
-    return mesh.section_multiplane(np.zeros(3), normal, list(positionen))
+    return mesh.section_multiplane(np.asarray(origin, float), np.asarray(normal, float), list(hoehen))
 
 
 def passt_irgendwie(teil, bauraum, rand=0.0):
@@ -185,14 +186,15 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None):
             a, b = lo + 0.5 * nutzbar, lo + nutzbar
         a, b = max(a, lo + 0.05 * laenge), min(b, hi - 0.05 * laenge)
         kandidaten = np.linspace(a, b, proben)
-        flaechen = [s.area if s is not None else 0.0 for s in schnitt_2d(t, achse, kandidaten)]
+        normal = ebene_achse(achse, 1.0)[1]
+        flaechen = [s.area if s is not None else 0.0 for s in schnitt_2d(t, np.zeros(3), normal, kandidaten)]
         # Leicht zur Mitte hin bevorzugen, damit bei gleicher Fläche ausgewogene Teile entstehen
         mitte = (a + b) / 2
         kosten = [f * (1 + 0.1 * abs(p - mitte) / max(b - a, 1e-6)) for f, p in zip(flaechen, kandidaten)]
         pos = kandidaten[int(np.argmin(kosten))]
         if log:
             log(f"Schnitt {'XYZ'[achse]} bei {pos - mesh.bounds[0][achse]:.1f} mm (Fläche {min(flaechen):.0f} mm²)")
-        haelften, n = schneide(t, achse, pos, duebel, log)
+        haelften, n = schneide(t, ebene_achse(achse, pos), duebel, log)
         zaehler += n
         for h in haelften:
             offen += [s for s in h.split(only_watertight=False) if len(s.faces) > 3]
@@ -223,25 +225,29 @@ def automatisch(mesh, bauraum, rand=3.0, duebel=None, log=print):
     return beste
 
 
-def lies_schnitte(texte):
-    """Wandelt z.B. ["z=50", "x=120"] in [(2, 50.0), (0, 120.0)] um."""
-    schnitte = []
+def lies_schnitte(mesh, texte):
+    """Wandelt z.B. ["z=50", "x=120"] (mm ab Modell-Unterkante) in Ebenen um."""
+    ebenen = []
     for s in texte:
         achse, pos = s.split("=")
-        schnitte.append((ACHSEN[achse.strip().lower()], float(pos.replace(",", "."))))
-    return schnitte
+        a = ACHSEN[achse.strip().lower()]
+        ebenen.append(ebene_achse(a, mesh.bounds[0][a] + float(pos.replace(",", "."))))
+    return ebenen
 
 
-def zerteile(mesh, schnitte, duebel=None, log=None):
-    """Manuelle Schnitte als (achse, position ab Modell-Unterkante). Rückgabe: (teile, anzahl_dübel)"""
-    lo = mesh.bounds[0]
+def wird_geschnitten(teil, ebene):
+    abstand = (teil.vertices - ebene[0]) @ (np.asarray(ebene[1]) / np.linalg.norm(ebene[1]))
+    return abstand.min() < -1e-6 and abstand.max() > 1e-6
+
+
+def zerteile(mesh, ebenen, duebel=None, log=None):
+    """Schneidet an beliebigen Ebenen (punkt, normale). Rückgabe: (teile, anzahl_dübel)"""
     teile, zaehler = [mesh], 0
-    for achse, rel in schnitte:
-        pos = lo[achse] + rel
+    for ebene in ebenen:
         neu = []
         for t in teile:
-            if t.bounds[0][achse] < pos < t.bounds[1][achse]:
-                haelften, n = schneide(t, achse, pos, duebel, log)
+            if wird_geschnitten(t, ebene):
+                haelften, n = schneide(t, ebene, duebel, log)
                 neu += haelften
                 zaehler += n
             else:
@@ -346,9 +352,9 @@ def main():
         duebel = Duebel(a.duebel, a.duebel_durchmesser, a.duebel_tiefe, a.duebel_spiel, drucken=not a.keine_duebel_teile)
 
     if a.schnitt:
-        teile, n = zerteile(mesh, lies_schnitte(a.schnitt), duebel, log=print)
+        teile, n = zerteile(mesh, lies_schnitte(mesh, a.schnitt), duebel, log=print)
     elif a.gitter:
-        teile, n = zerteile(mesh, auto_schnitte(mesh, bauraum, a.rand), duebel, log=print)
+        teile, n = zerteile(mesh, gitter_ebenen(mesh, bauraum, a.rand), duebel, log=print)
     else:
         teile, n = automatisch(mesh, bauraum, a.rand, duebel)
     aus = a.aus or pfad.with_name(pfad.stem + "_teile")
