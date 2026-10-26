@@ -141,6 +141,20 @@ class Fenster(QtWidgets.QMainWindow):
         m.addLayout(zeile)
         self.ebene_info = QtWidgets.QLabel("")
         m.addWidget(self.ebene_info)
+        self.fenster_an = QtWidgets.QCheckBox("Schnittfenster begrenzen (nur Segmente im Fenster)")
+        self.fenster_an.setToolTip("Nur Stellen, die das Rechteck berühren, werden geschnitten. "
+                                   "Das Fenster sitzt am Mittelpunkt der Ebene, den du mit der Maus ziehst.")
+        self.fenster_an.toggled.connect(self._zeichne_fenster)
+        m.addWidget(self.fenster_an)
+        zeile = QtWidgets.QHBoxLayout()
+        self.fenster_b = self._zahl(100, 5, 2000, 0)
+        self.fenster_h = self._zahl(100, 5, 2000, 0)
+        for text, feld in (("Breite", self.fenster_b), ("Höhe", self.fenster_h)):
+            zeile.addWidget(QtWidgets.QLabel(text))
+            zeile.addWidget(feld)
+            feld.valueChanged.connect(self._zeichne_fenster)
+        zeile.addWidget(QtWidgets.QLabel("mm"))
+        m.addLayout(zeile)
         zeile = QtWidgets.QHBoxLayout()
         k = QtWidgets.QPushButton("Schnitt hinzufügen")
         k.clicked.connect(self._schnitt_dazu)
@@ -260,6 +274,11 @@ class Fenster(QtWidgets.QMainWindow):
         self.liste.clear()
         self.ergebnis = None
         self.ebene = (self.mesh.bounds.mean(axis=0), np.array([0.0, 0.0, 1.0]))
+        groesse = round(float(np.max(self.mesh.extents)) / 3)
+        for feld in (self.fenster_b, self.fenster_h):
+            feld.blockSignals(True)
+            feld.setValue(groesse)
+            feld.blockSignals(False)
         self._log(f"Geladen: {self.pfad.name}")
         self._zeige_modell()
         self.ansicht.reset_camera()
@@ -293,8 +312,12 @@ class Fenster(QtWidgets.QMainWindow):
         groesse = float(np.linalg.norm(self.mesh.extents)) * 1.1
         for i in range(50):
             self.ansicht.remove_actor(f"schnitt{i}")
-        for i, (punkt, normale) in enumerate(self.schnitte):
-            flaeche = pv.Plane(center=punkt, direction=normale, i_size=groesse, j_size=groesse)
+        for i, schnitt in enumerate(self.schnitte):
+            punkt, normale = schnitt[0], schnitt[1]
+            if len(schnitt) > 2:
+                flaeche = self._rechteck(schnitt[2])
+            else:
+                flaeche = pv.Plane(center=punkt, direction=normale, i_size=groesse, j_size=groesse)
             self.ansicht.add_mesh(flaeche, color=SCHNITTFARBE, opacity=0.25, name=f"schnitt{i}", pickable=False)
 
     def _plane_widget(self):
@@ -308,6 +331,7 @@ class Fenster(QtWidgets.QMainWindow):
             implicit=True, interaction_event="always",
         )
         self.ebene_widget = widget
+        self._zeichne_fenster()
         widget.GetPlaneProperty().SetOpacity(0.3)
         widget.GetSelectedPlaneProperty().SetOpacity(0.4)
         widget.GetOutlineProperty().SetOpacity(0.2)
@@ -316,6 +340,30 @@ class Fenster(QtWidgets.QMainWindow):
     def _ebene_bewegt(self, normale, punkt):
         self.ebene = (np.array(punkt, float), np.array(normale, float))
         self._ebene_text()
+        self._zeichne_fenster()
+
+    def _fenster(self, punkt, normale):
+        if not self.fenster_an.isChecked():
+            return None
+        u, v = kern.ebenen_achsen(normale)
+        return kern.Fenster(np.array(punkt, float), u, v, self.fenster_b.value(), self.fenster_h.value())
+
+    @staticmethod
+    def _rechteck(f):
+        ecken = [f.mitte + a * f.u * f.breite / 2 + b * f.v * f.hoehe / 2 for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        return pv.PolyData(np.array(ecken), faces=[4, 0, 1, 2, 3])
+
+    def _zeichne_fenster(self, *_):
+        if self.mesh is None:
+            return
+        self.ansicht.remove_actor("fenster")
+        if self.ebene is None or self.ebene_widget is None:
+            return
+        f = self._fenster(*self.ebene)
+        if f is not None:
+            self.ansicht.add_mesh(self._rechteck(f), color="#1971c2", opacity=0.45, show_edges=True,
+                                  edge_color="#1971c2", line_width=3, name="fenster", pickable=False)
+        self.ansicht.render()
 
     def _ebene_text(self):
         if self.ebene is None:
@@ -349,6 +397,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.ebene = (punkt + n * schritt, n)
         self.ebene_widget.SetOrigin(*self.ebene[0])
         self._ebene_text()
+        self._zeichne_fenster()
         self.ansicht.render()
 
     def _schieber_los(self):
@@ -365,6 +414,7 @@ class Fenster(QtWidgets.QMainWindow):
             else:
                 self.ansicht.clear_plane_widgets()
                 self.ebene_widget = None
+                self._zeichne_fenster()
             self.ansicht.render()
 
     def _drucker_gewaehlt(self, name):
@@ -434,8 +484,12 @@ class Fenster(QtWidgets.QMainWindow):
             return
         punkt, n = self.ebene
         n = n / np.linalg.norm(n)
-        self.schnitte.append((punkt.copy(), n.copy()))
-        self.liste.addItem(self.ebene_info.text().replace("Ebene ", "Schnitt "))
+        f = self._fenster(punkt, n)
+        self.schnitte.append((punkt.copy(), n.copy(), f) if f else (punkt.copy(), n.copy()))
+        text = self.ebene_info.text().replace("Ebene ", "Schnitt ")
+        if f:
+            text += f", Fenster {f.breite:.0f} × {f.hoehe:.0f} mm"
+        self.liste.addItem(text)
         self._zeichne_schnitte()
         self.ansicht.render()
 

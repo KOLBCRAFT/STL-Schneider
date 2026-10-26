@@ -9,6 +9,13 @@ Löcher für gedruckte Dübel in die Schnittflächen. Voreingestellt ist der Bam
 2. Dieses Repository herunterladen (grüner Knopf „Code“ → „Download ZIP“) und entpacken.
 3. `start.bat` doppelklicken. Beim ersten Start werden die nötigen Pakete installiert, das dauert ein paar Minuten.
 
+## Aktualisieren
+
+`aktualisieren.bat` doppelklicken. Es holt die neueste Version vom Zweig `main` (eigene Ausgabeordner
+bleiben erhalten). Voraussetzung ist [Git für Windows](https://git-scm.com/download/win)
+(`winget install --id Git.Git -e`). Beim ersten Mal öffnet sich die GitHub-Anmeldung im Browser, weil das
+Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisch nachinstalliert.
+
 ## Bedienung
 
 - **Modell öffnen**: STL, 3MF oder OBJ. Das Modell erscheint in der 3D-Ansicht, der grüne Rahmen
@@ -24,6 +31,9 @@ Löcher für gedruckte Dübel in die Schnittflächen. Voreingestellt ist der Bam
 - **Manuell**: Die rote Schnittebene im 3D-Fenster mit der Maus ziehen (Fläche = verschieben,
   Pfeil = kippen). Mit ⟂ X / ⟂ Y / ⟂ Z wird sie gerade ausgerichtet, mit dem Regler verschoben.
   „Schnitt hinzufügen“ merkt sich die Ebene, beliebig viele Schnitte sind möglich, auch schräge.
+- **Schnittfenster**: Mit „Schnittfenster begrenzen“ wird nur geschnitten, wo der Querschnitt das blaue
+  Rechteck (Breite × Höhe, Mitte = Mittelpunkt der Ebene) berührt. So lässt sich z.B. ein einzelner Ast
+  abtrennen, während andere Äste in derselben Ebene ganz bleiben.
 - **Dübel**: Anzahl pro Schnittfläche, Durchmesser, Lochtiefe je Seite und Spiel. Die Dübel werden
   automatisch mit Abstand zum Rand verteilt und als eigene STL mit ausgegeben. Ist eine
   Schnittfläche zu klein, steht das im Protokoll.

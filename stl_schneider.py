@@ -80,41 +80,124 @@ def ebene_achse(achse, pos):
     return normal * pos, normal
 
 
-def schneide(mesh, ebene, duebel: Duebel = None, log=None):
-    """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt beide Hälften.
+@dataclass
+class Fenster:
+    """Begrenzt einen Schnitt auf ein Rechteck in der Schnittebene.
 
-    Mit duebel werden Löcher in beide Schnittflächen gebohrt. Rückgabe: (hälften, anzahl_dübel).
+    Nur Schnittflächen (Inseln im Querschnitt), die das Rechteck berühren, werden geschnitten,
+    alle anderen Stellen bleiben verbunden. So lässt sich z.B. ein einzelner Ast abtrennen.
+    """
+    mitte: np.ndarray   # Mittelpunkt in der Ebene
+    u: np.ndarray       # Richtung der Breite (Einheitsvektor in der Ebene)
+    v: np.ndarray       # Richtung der Höhe
+    breite: float
+    hoehe: float
+
+    def enthaelt(self, punkte_3d):
+        """Polygon (3D-Punkte in der Ebene) berührt das Fenster?"""
+        from shapely.geometry import Polygon, box
+        d = np.asarray(punkte_3d) - self.mitte
+        poly = Polygon(np.column_stack([d @ self.u, d @ self.v]))
+        rechteck = box(-self.breite / 2, -self.hoehe / 2, self.breite / 2, self.hoehe / 2)
+        return poly.buffer(0).intersects(rechteck)
+
+
+def ebenen_achsen(normal):
+    """Zwei Richtungen in der Ebene, passend zur Normalen (für Fenster und Anzeige)."""
+    n = np.asarray(normal, float) / np.linalg.norm(normal)
+    hilfe = np.array([0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    u = np.cross(hilfe, n)
+    u /= np.linalg.norm(u)
+    return u, np.cross(n, u)
+
+
+def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None):
+    """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt die Schnittflächen.
+
+    Mit duebel werden Löcher in beide Schnittflächen gebohrt, mit fenster wird nur innerhalb des
+    Fensters geschnitten. Rückgabe: (teile, anzahl_dübel).
     """
     origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
     normal = normal / np.linalg.norm(normal)
 
+    # Inseln des Querschnitts: (polygon_2d, 3D-Randpunkte, 3D-Innenpunkt, wird_geschnitten)
+    inseln = []
+    eben = schnitt_2d(mesh, origin, normal, [0.0])[0]
+    if eben is None:
+        return [mesh], 0
+    nach_3d = eben.metadata["to_3D"]
+
+    def zu_3d(xy):
+        xy = np.asarray(xy, float)
+        return trimesh.transform_points(np.column_stack([xy, np.zeros(len(xy))]), nach_3d)
+
+    for flaeche in eben.polygons_full:
+        rand = zu_3d(np.asarray(flaeche.exterior.coords))
+        innen = zu_3d([flaeche.representative_point().coords[0]])[0]
+        gewaehlt = fenster is None or fenster.enthaelt(rand)
+        inseln.append((flaeche, innen, gewaehlt))
+    if not any(i[2] for i in inseln):
+        return [mesh], 0
+
     loecher = []
     if duebel and duebel.anzahl > 0:
-        eben = schnitt_2d(mesh, origin, normal, [0.0])[0]
-        if eben is not None:
-            nach_3d = eben.metadata["to_3D"]
-            for flaeche in eben.polygons_full:
-                punkte = duebel_positionen(flaeche, duebel)
-                if not punkte and log:
-                    log(f"  Schnittfläche zu klein für Dübel ({flaeche.area:.0f} mm²)")
-                for p in punkte:
-                    mitte = trimesh.transform_points([[p[0], p[1], 0.0]], nach_3d)[0]
-                    zyl = trimesh.creation.cylinder(
-                        radius=(duebel.durchmesser + duebel.spiel) / 2,
-                        height=2 * (duebel.tiefe + 0.5),
-                        sections=32,
-                    )
-                    zyl.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal))
-                    zyl.apply_translation(mitte)
-                    loecher.append(zyl)
+        for flaeche, _, gewaehlt in inseln:
+            if not gewaehlt:
+                continue
+            punkte = duebel_positionen(flaeche, duebel)
+            if not punkte and log:
+                log(f"  Schnittfläche zu klein für Dübel ({flaeche.area:.0f} mm²)")
+            for mitte in zu_3d(punkte) if punkte else []:
+                zyl = trimesh.creation.cylinder(
+                    radius=(duebel.durchmesser + duebel.spiel) / 2,
+                    height=2 * (duebel.tiefe + 0.5),
+                    sections=32,
+                )
+                zyl.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal))
+                zyl.apply_translation(mitte)
+                loecher.append(zyl)
 
-    teile = []
-    for n in (-normal, normal):
-        t = mesh.slice_plane(origin, n, cap=True)
+    haelften = []
+    for seite in (-1, 1):
+        t = mesh.slice_plane(origin, seite * normal, cap=True)
         if t is not None and len(t.faces):
             if loecher:
                 t = trimesh.boolean.difference([t] + loecher, engine="manifold")
-            teile.append(t)
+            haelften.append((seite, t))
+
+    if all(i[2] for i in inseln):
+        return [t for _, t in haelften], len(loecher)
+
+    # Nur im Fenster schneiden: Stücke, die über eine nicht gewählte Insel zusammenhängen,
+    # werden wieder vereinigt.
+    stuecke = []  # (seite, mesh)
+    for seite, t in haelften:
+        stuecke += [(seite, s) for s in t.split(only_watertight=False) if len(s.faces) > 3]
+    eltern = list(range(len(stuecke)))
+
+    def wurzel(i):
+        while eltern[i] != i:
+            eltern[i] = eltern[eltern[i]]
+            i = eltern[i]
+        return i
+
+    for _, innen, gewaehlt in inseln:
+        if gewaehlt:
+            continue
+        beteiligt = []
+        for k, (seite, s) in enumerate(stuecke):
+            probe = innen + seite * normal * 0.05
+            if s.contains([probe])[0]:
+                beteiligt.append(k)
+        for k in beteiligt[1:]:
+            eltern[wurzel(k)] = wurzel(beteiligt[0])
+
+    gruppen = {}
+    for k in range(len(stuecke)):
+        gruppen.setdefault(wurzel(k), []).append(stuecke[k][1])
+    teile = []
+    for g in gruppen.values():
+        teile.append(g[0] if len(g) == 1 else trimesh.boolean.union(g, engine="manifold"))
     return teile, len(loecher)
 
 
@@ -241,13 +324,14 @@ def wird_geschnitten(teil, ebene):
 
 
 def zerteile(mesh, ebenen, duebel=None, log=None):
-    """Schneidet an beliebigen Ebenen (punkt, normale). Rückgabe: (teile, anzahl_dübel)"""
+    """Schneidet an beliebigen Ebenen (punkt, normale[, fenster]). Rückgabe: (teile, anzahl_dübel)"""
     teile, zaehler = [mesh], 0
     for ebene in ebenen:
         neu = []
         for t in teile:
             if wird_geschnitten(t, ebene):
-                haelften, n = schneide(t, ebene, duebel, log)
+                fenster = ebene[2] if len(ebene) > 2 else None
+                haelften, n = schneide(t, ebene[:2], duebel, log, fenster)
                 neu += haelften
                 zaehler += n
             else:
