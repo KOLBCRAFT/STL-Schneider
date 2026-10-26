@@ -1,7 +1,12 @@
 trimesh
 numpy
-manifold3d
+scipy
 shapely
+manifold3d
 networkx
 lxml
-scipy
+rtree
+pyvista
+pyvistaqt
+PySide6
+pywinusb; sys_platform == "win32"
