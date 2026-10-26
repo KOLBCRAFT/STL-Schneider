@@ -20,6 +20,9 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
 
 - **Modell öffnen**: STL, 3MF oder OBJ. Das Modell erscheint in der 3D-Ansicht, der grüne Rahmen
   ist der Bauraum.
+- **Skalieren**: Unter dem Modell lässt sich der Maßstab in Prozent oder ein Zielmaß in X, Y oder Z
+  eintragen, die anderen Achsen wachsen gleichmäßig mit. „100 %“ stellt die Originalgröße wieder her.
+  Bereits gesetzte Schnitte wandern mit, Dübel, Zapfen und Magnetlöcher behalten ihre Größe in mm.
 - **Ansicht**: linke Maustaste drehen, Mausrad zoomen, mittlere Maustaste (oder Umschalt + links)
   verschieben. Eine 3D-Maus von 3Dconnexion wird unter Windows automatisch erkannt
   (Haken „3D-Maus verwenden“, Empfindlichkeit per Regler).
@@ -75,6 +78,7 @@ python stl_schneider.py modell.stl --schnitt z=50 --schnitt x=120   # manuell
 python stl_schneider.py modell.stl --duebel 3 --duebel-durchmesser 8
 python stl_schneider.py modell.stl --duebel 0               # ohne Dübel
 python stl_schneider.py modell.stl --3mf
+python stl_schneider.py modell.stl --skalieren z=200        # vorher auf 200 mm Höhe skalieren (oder 150 für 150 %)
 python stl_schneider.py modell.stl --bambu                  # 3MF schreiben und in Bambu Studio öffnen
 ```
 

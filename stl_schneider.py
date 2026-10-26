@@ -35,6 +35,25 @@ def lade(pfad):
     return trimesh.load_mesh(pfad, force="mesh")
 
 
+def lies_groesse(mesh, text):
+    """Skalierungsfaktor aus "150%" / "150" (Prozent) oder "z=200" (Zielmaß einer Achse in mm)."""
+    text = text.strip().lower().replace(",", ".")
+    if "=" in text:
+        achse, wert = text.split("=", 1)
+        return float(wert) / float(mesh.extents["xyz".index(achse.strip())])
+    return float(text.rstrip("%")) / 100.0
+
+
+def skaliere(mesh, faktor, um=None):
+    """Gleichmäßig skalieren. um: fester Punkt (Standard: untere Ecke des Modells)."""
+    um = mesh.bounds[0] if um is None else np.asarray(um, float)
+    m = mesh.copy()
+    m.apply_translation(-um)
+    m.apply_scale(faktor)
+    m.apply_translation(um)
+    return m
+
+
 VERBINDER_ARTEN = {"duebel": "Dübel", "zapfen": "Zapfen", "magnet": "Magnete"}
 
 
@@ -644,6 +663,8 @@ def main():
     p.add_argument("--nicht-drehen", action="store_true", help="Teile nicht auf die Schnittfläche legen")
     p.add_argument("--3mf", dest="dreimf", action="store_true", help="Zusätzlich alle Teile in einer 3MF")
     p.add_argument("--aus", default=None, help="Ausgabeordner")
+    p.add_argument("--skalieren", default=None, metavar="WERT",
+                   help="Modell vorher skalieren: Prozent (z.B. 150) oder Zielmaß einer Achse (z.B. z=200)")
     p.add_argument("--bambu", action="store_true", help="Danach die 3MF in Bambu Studio öffnen (schaltet --3mf ein)")
     a = p.parse_args()
 
@@ -651,6 +672,10 @@ def main():
     pfad = Path(a.stl)
     mesh = lade(pfad)
     print(f"Geladen: {pfad.name}  Größe {np.round(mesh.extents, 1)} mm  wasserdicht={mesh.is_watertight}")
+    if a.skalieren:
+        faktor = lies_groesse(mesh, a.skalieren)
+        mesh = skaliere(mesh, faktor)
+        print(f"Skaliert auf {faktor * 100:.4g} %: {np.round(mesh.extents, 1)} mm")
 
     duebel = None
     if a.duebel > 0:

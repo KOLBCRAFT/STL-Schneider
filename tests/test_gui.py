@@ -129,3 +129,43 @@ def test_beste_lage_und_stuetzen(app, tmp_path):
     f._lage_gefunden(lagen[0])
     assert "ueberhang" not in f.ansicht.actors  # stehender Zylinder: keine Stützen
     f.close()
+
+
+def test_skalieren(app, tmp_path):
+    modell = tmp_path / "zylinder.stl"
+    trimesh.creation.cylinder(radius=60, height=500).export(modell)
+    f = gui.Fenster()
+    f.show()
+    f._oeffnen(str(modell))
+    f.manuell.setChecked(True)
+    f.ebene = (f.mesh.bounds.mean(axis=0), np.array([0.0, 0.0, 1.0]))
+    f._plane_widget()
+    f._schnitt_dazu()
+    unten = f.mesh.bounds[0].copy()
+
+    # Zielhöhe 250 mm -> 50 %, der Schnitt wandert mit
+    f.groesse[2].setValue(250)
+    f._groesse_gewaehlt(2)
+    assert f.faktor == pytest.approx(0.5)
+    assert f.massstab.value() == pytest.approx(50)
+    assert f.mesh.extents == pytest.approx([60, 60, 250])
+    assert f.schnitte[0]["punkt"][2] == pytest.approx(unten[2] + 125)
+    assert "125 mm" in f.schnitte[0]["text"]
+
+    # Prozent, bezogen auf das Original
+    f.massstab.setValue(200)
+    f._skalieren(f.massstab.value() / 100)
+    assert f.mesh.extents[2] == pytest.approx(1000)
+    assert f.groesse[0].value() == pytest.approx(240)
+    assert f.schnitte[0]["punkt"][2] == pytest.approx(unten[2] + 500)
+
+    ergebnisse = []
+    f.signale.fertig.disconnect()
+    f.signale.fertig.connect(ergebnisse.append)
+    f._arbeite(f._einstellungen())
+    app.processEvents()
+    teile = ergebnisse[0][0]
+    assert sorted(round(t.extents[2]) for t in teile) == [500, 500]  # Schnitt in der Mitte des 1000-mm-Modells
+    f._skalieren(1.0)
+    assert f.mesh is f.original
+    f.close()
