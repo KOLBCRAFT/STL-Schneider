@@ -10,10 +10,12 @@ import pyvista as pv
 from pyvistaqt import QtInteractor
 from qtpy import QtCore, QtWidgets
 
+import profile_speicher as profile
 import stl_schneider as kern
 
 TEILFARBEN = ["#4c6ef5", "#f76707", "#37b24d", "#e64980", "#15aabf", "#fab005", "#7950f2", "#82c91e",
               "#fd7e14", "#228be6", "#be4bdb", "#12b886"]
+EIGENER = "Eigene Maße"
 MODELLFARBE = "#adb5bd"
 SCHNITTFARBE = "#d9480f"
 
@@ -93,19 +95,29 @@ class Fenster(QtWidgets.QMainWindow):
 
         # Drucker
         gruppe, form = self._gruppe(spalte, "Drucker")
+        self.einstellungen = profile.lade()
         self.drucker = QtWidgets.QComboBox()
-        self.drucker.addItems(list(kern.DRUCKER) + ["Eigener"])
         self.drucker.currentTextChanged.connect(self._drucker_gewaehlt)
         form.addRow(self.drucker)
         zeile = QtWidgets.QHBoxLayout()
         self.bauraum = []
         for name, wert in zip("XYZ", kern.DRUCKER[kern.STANDARD_DRUCKER]):
             feld = self._zahl(wert, 10, 2000, 0)
-            feld.valueChanged.connect(self._zeichne_bauraum)
+            feld.valueChanged.connect(self._bauraum_geaendert)
             self.bauraum.append(feld)
             zeile.addWidget(QtWidgets.QLabel(name))
             zeile.addWidget(feld)
+        zeile.addWidget(QtWidgets.QLabel("mm"))
         form.addRow(zeile)
+        zeile = QtWidgets.QHBoxLayout()
+        k = QtWidgets.QPushButton("Als Profil speichern …")
+        k.clicked.connect(self._profil_speichern)
+        zeile.addWidget(k)
+        self.k_profil_loeschen = QtWidgets.QPushButton("Profil löschen")
+        self.k_profil_loeschen.clicked.connect(self._profil_loeschen)
+        zeile.addWidget(self.k_profil_loeschen)
+        form.addRow(zeile)
+        self._profile_fuellen(self.einstellungen.get("letztes_profil", kern.STANDARD_DRUCKER))
 
         # Schneiden
         gruppe, form = self._gruppe(spalte, "Schneiden")
@@ -417,11 +429,75 @@ class Fenster(QtWidgets.QMainWindow):
                 self._zeichne_fenster()
             self.ansicht.render()
 
+    # ---------- Drucker-Profile ----------
+
+    def _alle_profile(self):
+        return {**kern.DRUCKER, **self.einstellungen["profile"]}
+
+    def _profile_fuellen(self, auswahl):
+        self.drucker.blockSignals(True)
+        self.drucker.clear()
+        self.drucker.addItems(list(kern.DRUCKER))
+        eigene = sorted(self.einstellungen["profile"])
+        if eigene:
+            self.drucker.insertSeparator(self.drucker.count())
+            self.drucker.addItems(eigene)
+        self.drucker.addItem(EIGENER)
+        self.drucker.blockSignals(False)
+        if self.drucker.findText(auswahl) < 0:
+            auswahl = kern.STANDARD_DRUCKER
+        self.drucker.setCurrentText(auswahl)
+        self._drucker_gewaehlt(auswahl)
+
     def _drucker_gewaehlt(self, name):
-        werte = kern.DRUCKER.get(name)
+        werte = self._alle_profile().get(name)
         if werte:
             for feld, w in zip(self.bauraum, werte):
+                feld.blockSignals(True)
                 feld.setValue(w)
+                feld.blockSignals(False)
+            self._zeichne_bauraum()
+            self.einstellungen["letztes_profil"] = name
+            profile.speichere(self.einstellungen)
+        self.k_profil_loeschen.setEnabled(name in self.einstellungen["profile"])
+
+    def _bauraum_geaendert(self):
+        # Von Hand geänderte Maße passen nicht mehr zum Profil
+        werte = self._alle_profile().get(self.drucker.currentText())
+        if werte and list(werte) != [f.value() for f in self.bauraum]:
+            self.drucker.blockSignals(True)
+            self.drucker.setCurrentText(EIGENER)
+            self.drucker.blockSignals(False)
+            self.k_profil_loeschen.setEnabled(False)
+        self._zeichne_bauraum()
+
+    def _profil_speichern(self):
+        vorschlag = self.drucker.currentText()
+        if vorschlag == EIGENER or vorschlag in kern.DRUCKER:
+            vorschlag = ""
+        name, ok = QtWidgets.QInputDialog.getText(self, "Profil speichern", "Name des Profils:", text=vorschlag)
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in kern.DRUCKER or name == EIGENER:
+            QtWidgets.QMessageBox.information(self, "Profil speichern",
+                                              "Dieser Name ist schon vergeben, bitte einen anderen wählen.")
+            return
+        self.einstellungen["profile"][name] = [f.value() for f in self.bauraum]
+        profile.speichere(self.einstellungen)
+        self._profile_fuellen(name)
+        self._log(f"Profil „{name}“ gespeichert")
+
+    def _profil_loeschen(self):
+        name = self.drucker.currentText()
+        if name not in self.einstellungen["profile"]:
+            return
+        if QtWidgets.QMessageBox.question(self, "Profil löschen", f"Profil „{name}“ löschen?") != \
+                QtWidgets.QMessageBox.Yes:
+            return
+        del self.einstellungen["profile"][name]
+        profile.speichere(self.einstellungen)
+        self._profile_fuellen(kern.STANDARD_DRUCKER)
 
     # ---------- 3D-Maus ----------
 

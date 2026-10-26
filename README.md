@@ -23,8 +23,11 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
 - **Ansicht**: linke Maustaste drehen, Mausrad zoomen, mittlere Maustaste (oder Umschalt + links)
   verschieben. Eine 3D-Maus von 3Dconnexion wird unter Windows automatisch erkannt
   (Haken „3D-Maus verwenden“, Empfindlichkeit per Regler).
-- **Drucker**: H2D mit einer Düse (325 × 320 × 325 mm), mit beiden Düsen (300 × 320 × 325 mm),
-  weitere Bambu-Drucker oder eigene Maße.
+- **Drucker**: H2D mit einer Düse (325 × 320 × 325 mm), mit beiden Düsen (300 × 320 × 325 mm) und
+  weitere Bambu-Drucker sind vorgegeben. X, Y und Z lassen sich frei eintragen. Mit „Als Profil
+  speichern …“ werden die Maße unter einem eigenen Namen gespeichert, mit „Profil löschen“ wieder
+  entfernt. Die Profile liegen in `%APPDATA%\STL-Schneider\einstellungen.json` und bleiben beim
+  Aktualisieren erhalten. Das zuletzt gewählte Profil ist beim nächsten Start wieder eingestellt.
 - **Automatisch**: Schneidet nur Teile, die nicht passen, und legt jeden Schnitt an die dünnste
   Stelle im erlaubten Bereich. Probiert das Modell in Originallage und ausgerichtet und nimmt die
   Variante mit weniger Teilen.
