@@ -187,6 +187,8 @@ def test_moderne_oberflaeche(app, tmp_path, monkeypatch):
     assert f._modell_aus(mime) is None
     f._oeffnen(str(modell))
     assert f.einstellungen["zuletzt"] == [str(modell)] and f.k_zuletzt.isEnabled()
+    # Nach dem Neuzeichnen müssen Lampen da sein, sonst wirkt das Modell flach
+    assert len(f.ansicht.renderer.lights) > 1
     assert f.status.text() == "Geladen: zylinder.stl"
 
     # Design umschalten wird gemerkt

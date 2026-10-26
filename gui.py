@@ -23,6 +23,8 @@ PASST_TOENE = (PASST_FARBE, "#2b8a3e")
 ZU_GROSS_TOENE = (ZU_GROSS_FARBE, "#c92a2a")
 MODELLFARBE = "#adb5bd"
 SCHNITTFARBE = "#d9480f"
+# Leichter Glanz, damit Rillen und Kanten der Oberfläche plastisch wirken
+OBERFLAECHE = dict(smooth_shading=True, specular=0.4, specular_power=20)
 SCHRITTE = ("Modell", "Schneiden", "Verbinder", "Teile", "Ausgabe")
 
 
@@ -540,6 +542,11 @@ class Fenster(QtWidgets.QMainWindow):
         self.a_design = aktion("☾ Dunkel", "Zwischen hellem und dunklem Design wechseln",
                                lambda an: self._design("dunkel" if an else "hell", merken=True), umschalter=True)
 
+    def _leeren(self):
+        """Szene leeren. clear() entfernt auch die Lampen, ohne sie wirkt alles flach wie ein Scherenschnitt."""
+        self.ansicht.clear()
+        self.ansicht.enable_lightkit()
+
     def _kamera(self, ansicht):
         if ansicht is not None:
             ansicht()
@@ -740,8 +747,8 @@ class Fenster(QtWidgets.QMainWindow):
         p = self.ansicht
         p.clear_plane_widgets()
         self.ebene_widget = None
-        p.clear()
-        p.add_mesh(self.modell_pv, color=MODELLFARBE, smooth_shading=True, name="modell")
+        self._leeren()
+        p.add_mesh(self.modell_pv, color=MODELLFARBE, **OBERFLAECHE, name="modell")
         self._zeichne_bauraum()
         self._zeichne_schnitte()
         if self.manuell.isChecked():
@@ -792,10 +799,10 @@ class Fenster(QtWidgets.QMainWindow):
             if getattr(self, "_halb_schluessel", None) != schluessel:
                 self._halb = self.modell_pv.clip(normal=s["normale"], origin=s["punkt"], invert=hinten)
                 self._halb_schluessel = schluessel
-            self.ansicht.add_mesh(self._halb, color=MODELLFARBE, smooth_shading=True, name="modell", pickable=False)
+            self.ansicht.add_mesh(self._halb, color=MODELLFARBE, **OBERFLAECHE, name="modell", pickable=False)
             self._zeichne_verbinder(s)
         else:
-            self.ansicht.add_mesh(self.modell_pv, color=MODELLFARBE, smooth_shading=True, name="modell",
+            self.ansicht.add_mesh(self.modell_pv, color=MODELLFARBE, **OBERFLAECHE, name="modell",
                                   pickable=False)
         if neu_rendern:
             self.ansicht.render()
@@ -1277,7 +1284,7 @@ class Fenster(QtWidgets.QMainWindow):
         p = self.ansicht
         p.clear_plane_widgets()
         self.ebene_widget = None
-        p.clear()
+        self._leeren()
         mitte = self.mesh.bounds.mean(axis=0)
         abstand = 0.12 * float(np.max(self.mesh.extents))
         for i, t in enumerate(teile):
@@ -1289,7 +1296,7 @@ class Fenster(QtWidgets.QMainWindow):
             passt = kern.passt_irgendwie(t, self.ergebnis[2]["bauraum"])
             # Abwechselnd hell/dunkel, damit benachbarte Teile unterscheidbar bleiben
             farben = PASST_TOENE if passt else ZU_GROSS_TOENE
-            p.add_mesh(netz, color=farben[i % 2], smooth_shading=True, name=f"teil{i}")
+            p.add_mesh(netz, color=farben[i % 2], **OBERFLAECHE, name=f"teil{i}")
             p.add_point_labels([t.bounds.mean(axis=0) + versatz], [f"{i + 1}"], font_size=14,
                                shape_opacity=0.6, always_visible=True, name=f"nummer{i}")
         p.add_axes()
@@ -1331,12 +1338,12 @@ class Fenster(QtWidgets.QMainWindow):
         p = self.ansicht
         p.clear_plane_widgets()
         self.ebene_widget = None
-        p.clear()
+        self._leeren()
         box = pv.Box(bounds=(0, b[0], 0, b[1], 0, b[2]))
         p.add_mesh(box, style="wireframe", color="#2b8a3e", line_width=2, name="bauraum", pickable=False)
         self._druckplatte(0, 0, 0, b[0], b[1])
         self.teil_akteur = p.add_mesh(zu_pyvista(teil), color=PASST_FARBE,
-                                      smooth_shading=True, name="teil_im_bauraum")
+                                      **OBERFLAECHE, name="teil_im_bauraum")
         self.teil_akteur.user_matrix = self.lagen[i]
         pts = trimesh.transform_points(self.huellen[i], self.lagen[i])
         self.teil_widget = p.add_affine_transform_widget(
