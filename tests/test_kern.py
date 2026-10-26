@@ -157,3 +157,14 @@ def test_beste_lage_pilz_kopfueber():
     assert gelegt.bounds[0] == pytest.approx([0, 0, 0], abs=1e-6)
     # Schirm liegt auf der Platte: große Auflage
     assert k["auflage"] > 4000
+
+
+def test_skalieren(zylinder):
+    assert kern.lies_groesse(zylinder, "150%") == pytest.approx(1.5)
+    assert kern.lies_groesse(zylinder, "50") == pytest.approx(0.5)
+    faktor = kern.lies_groesse(zylinder, "z=1000")
+    gross = kern.skaliere(zylinder, faktor)
+    assert gross.extents[2] == pytest.approx(1000)
+    assert gross.extents[0] == pytest.approx(zylinder.extents[0] * faktor)
+    assert gross.bounds[0] == pytest.approx(zylinder.bounds[0])  # untere Ecke bleibt
+    assert zylinder.extents[2] != pytest.approx(1000)  # Original unverändert

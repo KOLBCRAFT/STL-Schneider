@@ -108,6 +108,27 @@ class Fenster(QtWidgets.QMainWindow):
         self.info = QtWidgets.QLabel("Noch keine Datei geladen")
         self.info.setWordWrap(True)
         form.addRow(self.info)
+        zeile = QtWidgets.QHBoxLayout()
+        self.massstab = self._zahl(100, 0.1, 100000, 1, 10)
+        self.massstab.setSuffix(" %")
+        self.massstab.setToolTip("Modell gleichmäßig skalieren, bezogen auf die Originalgröße")
+        self.massstab.editingFinished.connect(lambda: self._skalieren(self.massstab.value() / 100))
+        knopf = QtWidgets.QPushButton("100 %")
+        knopf.setToolTip("Zurück zur Originalgröße")
+        knopf.clicked.connect(lambda: self._skalieren(1.0))
+        zeile.addWidget(self.massstab, 1)
+        zeile.addWidget(knopf)
+        form.addRow("Maßstab", zeile)
+        zeile = QtWidgets.QHBoxLayout()
+        self.groesse = []
+        for i, name in enumerate("XYZ"):
+            feld = self._zahl(0, 0.1, 100000, 1)
+            feld.setToolTip(f"Gewünschtes Maß in {name} eintragen, die anderen Achsen werden mitskaliert")
+            feld.editingFinished.connect(lambda i=i: self._groesse_gewaehlt(i))
+            zeile.addWidget(QtWidgets.QLabel(name))
+            zeile.addWidget(feld, 1)
+            self.groesse.append(feld)
+        form.addRow("Größe mm", zeile)
 
         # Drucker
         gruppe, form = self._gruppe(spalte, "Drucker")
@@ -400,9 +421,9 @@ class Fenster(QtWidgets.QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self.pfad = Path(pfad)
-        x, y, z = self.mesh.extents
-        self.info.setText(f"{self.pfad.name}\n{x:.1f} × {y:.1f} × {z:.1f} mm, {len(self.mesh.faces):,} Dreiecke"
-                          + ("" if self.mesh.is_watertight else "\nAchtung: Modell ist nicht geschlossen"))
+        self.original = self.mesh
+        self.faktor = 1.0
+        self._groesse_anzeigen()
         self.modell_pv = zu_pyvista(self.mesh)
         self.schnitte.clear()
         self.verlauf.clear()
@@ -419,6 +440,59 @@ class Fenster(QtWidgets.QMainWindow):
         self._zeige_modell()
         self.ansicht.reset_camera()
         self._knoepfe()
+
+    def _groesse_anzeigen(self):
+        x, y, z = self.mesh.extents
+        text = f"{self.pfad.name}\n{x:.1f} × {y:.1f} × {z:.1f} mm, {len(self.mesh.faces):,} Dreiecke"
+        if self.faktor != 1.0:
+            o = self.original.extents
+            text += f"\nOriginal {o[0]:.1f} × {o[1]:.1f} × {o[2]:.1f} mm"
+        if not self.mesh.is_watertight:
+            text += "\nAchtung: Modell ist nicht geschlossen"
+        self.info.setText(text)
+        for feld, wert in zip([self.massstab, *self.groesse], [self.faktor * 100, x, y, z]):
+            feld.blockSignals(True)
+            feld.setValue(wert)
+            feld.blockSignals(False)
+
+    def _groesse_gewaehlt(self, achse):
+        if self.mesh is None:
+            return
+        self._skalieren(self.groesse[achse].value() / float(self.original.extents[achse]))
+
+    def _skalieren(self, faktor):
+        """Skaliert das Modell gleichmäßig (bezogen auf das Original) um seine untere Ecke.
+        Vorhandene Schnitte werden mitgeschoben, Verbindergrößen bleiben in mm gleich."""
+        if self.mesh is None or faktor <= 0 or abs(faktor - self.faktor) < 1e-9:
+            self._groesse_anzeigen() if self.mesh is not None else None
+            return
+        um = self.original.bounds[0]
+        schritt = faktor / self.faktor
+
+        def weiter(p):
+            return um + (np.asarray(p, float) - um) * schritt
+
+        for s in self.schnitte:
+            s["punkt"] = weiter(s["punkt"])
+            s["punkte"] = [weiter(p) for p in s["punkte"]]
+            f = s["fenster"]
+            if f is not None:
+                s["fenster"] = kern.Fenster(weiter(f.mitte), f.u, f.v, f.breite * schritt, f.hoehe * schritt)
+            s["text"] = self._schnitt_text(s["punkt"], s["normale"], s["fenster"], um)
+        if self.ebene is not None:
+            self.ebene = (weiter(self.ebene[0]), self.ebene[1])
+        self.verlauf.clear()
+        self.zukunft.clear()
+        self.faktor = faktor
+        self.mesh = kern.skaliere(self.original, faktor, um) if faktor != 1.0 else self.original
+        self.modell_pv = zu_pyvista(self.mesh)
+        self._halb_schluessel = None
+        self._groesse_anzeigen()
+        x, y, z = self.mesh.extents
+        self._log(f"Skaliert auf {faktor * 100:.4g} %: {x:.1f} × {y:.1f} × {z:.1f} mm")
+        self._liste_aktualisieren()
+        self._zeige_modell()
+        self.ansicht.reset_camera()
 
     def _zeige_modell(self):
         self.ergebnis = None
@@ -614,11 +688,20 @@ class Fenster(QtWidgets.QMainWindow):
         punkt, n = self.ebene
         n = n / np.linalg.norm(n)
         lo = self.mesh.bounds[0]
+        self.ebene_info.setText(self._ebene_beschreibung(punkt, n, lo))
+
+    @staticmethod
+    def _ebene_beschreibung(punkt, n, lo):
         rel = punkt - lo
         neigung = np.degrees(np.arccos(min(1.0, np.max(np.abs(n)))))
         achse = "XYZ"[int(np.argmax(np.abs(n)))]
-        self.ebene_info.setText(f"Ebene ⟂ {achse}, {neigung:.0f}° gekippt, "
-                                f"Punkt {rel[0]:.0f} / {rel[1]:.0f} / {rel[2]:.0f} mm")
+        return f"Ebene ⟂ {achse}, {neigung:.0f}° gekippt, Punkt {rel[0]:.0f} / {rel[1]:.0f} / {rel[2]:.0f} mm"
+
+    def _schnitt_text(self, punkt, n, f, lo):
+        text = self._ebene_beschreibung(punkt, n, lo).replace("Ebene ", "Schnitt ")
+        if f:
+            text += f", Fenster {f.breite:.0f} × {f.hoehe:.0f} mm"
+        return text
 
     def _ebene_achse(self, achse):
         if self.mesh is None:
@@ -792,9 +875,7 @@ class Fenster(QtWidgets.QMainWindow):
         punkt, n = self.ebene
         n = n / np.linalg.norm(n)
         f = self._fenster(punkt, n)
-        text = self.ebene_info.text().replace("Ebene ", "Schnitt ")
-        if f:
-            text += f", Fenster {f.breite:.0f} × {f.hoehe:.0f} mm"
+        text = self._schnitt_text(punkt, n, f, self.mesh.bounds[0])
         self._merken()
         self.schnitte.append(dict(punkt=punkt.copy(), normale=n.copy(), fenster=f, punkte=[], text=text))
         self._liste_aktualisieren(len(self.schnitte) - 1)
