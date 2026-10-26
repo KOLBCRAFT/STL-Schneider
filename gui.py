@@ -31,6 +31,7 @@ class Signale(QtCore.QObject):
     log = QtCore.Signal(str)
     fertig = QtCore.Signal(object)
     fehler = QtCore.Signal(str)
+    lage = QtCore.Signal(object)
 
 
 class Fenster(QtWidgets.QMainWindow):
@@ -54,6 +55,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.signale.log.connect(self._log)
         self.signale.fertig.connect(self._berechnet)
         self.signale.fehler.connect(self._fehler)
+        self.signale.lage.connect(self._lage_gefunden)
 
         self._baue_oberflaeche()
 
@@ -289,6 +291,29 @@ class Fenster(QtWidgets.QMainWindow):
             k.setToolTip(f"90° um die {'XYZ'[achse]}-Achse drehen")
             k.clicked.connect(lambda _=False, a=achse: self._teil_drehen(a))
             zeile.addWidget(k)
+        form.addRow(zeile)
+        zeile = QtWidgets.QHBoxLayout()
+        self.k_beste = QtWidgets.QPushButton("Beste Lage")
+        self.k_beste.setToolTip("Lage mit möglichst wenig Stützmaterial, guter Auflage und geringer Höhe suchen")
+        self.k_beste.clicked.connect(lambda: self._beste_lage(alle=False))
+        zeile.addWidget(self.k_beste)
+        self.k_beste_alle = QtWidgets.QPushButton("Beste Lage für alle")
+        self.k_beste_alle.clicked.connect(lambda: self._beste_lage(alle=True))
+        zeile.addWidget(self.k_beste_alle)
+        form.addRow(zeile)
+        zeile = QtWidgets.QHBoxLayout()
+        self.stuetzen_an = QtWidgets.QCheckBox("Stützen anzeigen ab")
+        self.stuetzen_an.setChecked(True)
+        self.stuetzen_an.setToolTip("Überhänge, die Stützen brauchen, orange färben")
+        self.stuetzen_an.toggled.connect(lambda *_: self._zeige_ueberhang())
+        zeile.addWidget(self.stuetzen_an)
+        self.ueberhang_winkel = self._zahl(45, 10, 89, 0)
+        self.ueberhang_winkel.setSuffix("°")
+        self.ueberhang_winkel.setToolTip("Überhangwinkel von der Senkrechten, ab dem Stützen nötig sind "
+                                         "(wie in Bambu Studio, meist 30–45°)")
+        self.ueberhang_winkel.valueChanged.connect(lambda *_: self._zeige_ueberhang())
+        zeile.addWidget(self.ueberhang_winkel)
+        zeile.addStretch(1)
         form.addRow(zeile)
         self.passt_info = QtWidgets.QLabel("")
         self.passt_info.setWordWrap(True)
@@ -968,16 +993,82 @@ class Fenster(QtWidgets.QMainWindow):
             self.teil_akteur, origin=tuple((pts.min(axis=0) + pts.max(axis=0)) / 2),
             interact_callback=self._teil_bewegt, release_callback=self._teil_losgelassen)
         p.add_axes()
+        p.view_isometric()
+        p.camera.elevation = -15  # etwas flacher, damit Unterseiten sichtbar sind
         p.reset_camera()
         p.render()
         self._pruefe_lage()
+        self._zeige_ueberhang()
+        QtCore.QTimer.singleShot(50, lambda: self.rollen.ensureWidgetVisible(self.passt_info))
+
+    def _zeige_ueberhang(self):
+        """Färbt Überhänge, die Stützen brauchen, orange und zeigt die Stützfläche an."""
+        self.ansicht.remove_actor("ueberhang")
+        self.ansicht.remove_actor("stuetzen_schatten")
+        self.stuetzen_text = ""
+        if not getattr(self, "im_bauraum", False) or self.teil_akteur is None:
+            return
+        i = self.teile_liste.currentRow()
+        teil = self.ergebnis[0][i]
+        maske, k = kern.ueberhang(teil, self.lagen[i], self.ueberhang_winkel.value())
+        self.stuetzen_text = (f"Stützen nötig auf ca. {k['stuetzflaeche'] / 100:.0f} cm², "
+                              f"Auflage {k['auflage'] / 100:.1f} cm², Höhe {k['hoehe']:.0f} mm.")
+        if k["auflage"] < 100:
+            self.stuetzen_text += " Wenig Auflage: in Bambu Studio einen Rand (Brim) verwenden."
+        if self.stuetzen_an.isChecked() and maske.any():
+            netz = zu_pyvista(teil).extract_cells(np.flatnonzero(maske))
+            akteur = self.ansicht.add_mesh(netz, color="#fd7e14", name="ueberhang", pickable=False)
+            akteur.mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            akteur.mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(-2, -2)
+            akteur.user_matrix = self.lagen[i]
+            # "Schatten" der Stützen auf der Platte, damit man sie auch von oben sieht
+            schatten = netz.transform(self.lagen[i], inplace=False)
+            schatten.points[:, 2] = 0.2
+            self.ansicht.add_mesh(schatten, color="#fd7e14", opacity=0.45, name="stuetzen_schatten",
+                                  pickable=False)
+        self._pruefe_lage()
+
+    def _beste_lage(self, alle=False):
+        if self.ergebnis is None or self.teile_liste.currentRow() < 0:
+            return
+        teile, _, e = self.ergebnis
+        welche = list(range(len(teile))) if alle else [self.teile_liste.currentRow()]
+        winkel = self.ueberhang_winkel.value()
+        for k in (self.k_beste, self.k_beste_alle):
+            k.setEnabled(False)
+        self.k_beste.setText("Suche …")
+
+        def arbeit():
+            ergebnis = {}
+            for i in welche:
+                m, _ = kern.beste_lage(teile[i], e["bauraum"], winkel)
+                pts = trimesh.transform_points(self.huellen[i], m)
+                mitte = (pts.min(axis=0) + pts.max(axis=0)) / 2
+                b = e["bauraum"]
+                ergebnis[i] = trimesh.transformations.translation_matrix(
+                    [b[0] / 2 - mitte[0], b[1] / 2 - mitte[1], 0]) @ m
+                self.signale.log.emit(f"Teil {i + 1}: beste Lage gefunden")
+            self.signale.lage.emit(ergebnis)
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    def _lage_gefunden(self, ergebnis):
+        self.lagen.update(ergebnis)
+        for k in (self.k_beste, self.k_beste_alle):
+            k.setEnabled(True)
+        self.k_beste.setText("Beste Lage")
+        self._in_bauraum()
 
     def _teil_bewegt(self, matrix):
         self.lagen[self.teile_liste.currentRow()] = np.array(matrix)
+        ueberhang = self.ansicht.actors.get("ueberhang")
+        if ueberhang is not None:
+            ueberhang.user_matrix = np.array(matrix)
         self._pruefe_lage()
 
     def _teil_losgelassen(self, matrix):
         self._teil_bewegt(matrix)
+        self._zeige_ueberhang()
         # Widget an die neue Teilmitte setzen, damit Drehungen um das Teil herum gehen
         i = self.teile_liste.currentRow()
         pts = trimesh.transform_points(self.huellen[i], self.lagen[i])
@@ -1023,7 +1114,8 @@ class Fenster(QtWidgets.QMainWindow):
         else:
             text = f"Teil {i + 1} ({x:.0f} × {y:.0f} × {z:.0f} mm) passt in den Bauraum."
             farbe = "#2b8a3e"
-        self.passt_info.setText(text)
+        stuetzen = getattr(self, "stuetzen_text", "")
+        self.passt_info.setText(text + ("\n" + stuetzen if stuetzen else ""))
         self.passt_info.setStyleSheet(f"color: {farbe}; font-weight: bold;")
         akteur = self.ansicht.actors.get("bauraum")
         if akteur is not None:

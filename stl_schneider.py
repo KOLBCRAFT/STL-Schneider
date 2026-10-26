@@ -465,6 +465,98 @@ def auf_platte_legen(teil, bauraum=None):
     return t
 
 
+def ueberhang(teil, matrix, winkel=45.0, toleranz=0.3):
+    """Welche Dreiecke brauchen in dieser Lage Stützen?
+
+    Ein Dreieck braucht Stützen, wenn es um mehr als winkel (Grad, von der Senkrechten gemessen)
+    überhängt und nicht direkt auf der Platte liegt. Rückgabe: (maske, kennzahlen).
+    """
+    hoch = np.asarray(matrix, float)[2, :3]  # Zeile der Matrix, die die neue Z-Richtung ergibt
+    nz = teil.face_normals @ hoch
+    z = teil.vertices @ hoch
+    z_dreieck = z[teil.faces]
+    z_min = z.min()
+    unten = z_dreieck.max(axis=1) < z_min + toleranz
+    maske = (nz < -np.sin(np.radians(winkel))) & ~unten
+    flaechen = teil.area_faces
+    hoehe_ueber_platte = z_dreieck.mean(axis=1) - z_min
+    kennzahlen = dict(
+        stuetzflaeche=float(flaechen[maske].sum()),
+        stuetzvolumen=float((flaechen[maske] * -nz[maske] * hoehe_ueber_platte[maske]).sum()),
+        auflage=float(flaechen[unten].sum()),
+        hoehe=float(z.max() - z_min),
+    )
+    return maske, kennzahlen
+
+
+def _richtungen(teil, anzahl=150):
+    """Kandidaten für die Richtung, die nach unten zeigen soll."""
+    rs = [np.array(v, float) for v in ((0, 0, -1), (0, 0, 1), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0))]
+    if len(teil.facets):
+        rs += list(teil.facets_normal[np.argsort(teil.facets_area)[::-1][:20]])
+    # Gleichmäßig auf der Kugel verteilt (Fibonacci)
+    i = np.arange(anzahl) + 0.5
+    phi = np.arccos(1 - 2 * i / anzahl)
+    theta = np.pi * (1 + 5 ** 0.5) * i
+    rs += list(np.column_stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)]))
+    return rs
+
+
+def beste_lage(teil, bauraum, winkel=45.0, log=None):
+    """Sucht die Lage mit möglichst wenig Stützmaterial, die in den Bauraum passt.
+
+    Bewertet viele Ausrichtungen nach geschätztem Stützvolumen, Auflagefläche und Höhe.
+    Rückgabe: (4x4-Matrix, kennzahlen) mit dem Teil in der Ecke des Bauraums.
+    """
+    # Für große Modelle genügt eine Stichprobe der Dreiecke zur Bewertung
+    probe = teil
+    if len(teil.faces) > 60000:
+        auswahl = np.random.default_rng(0).choice(len(teil.faces), 60000, replace=False)
+        probe = teil.submesh([auswahl], append=True, repair=False)
+    hull = teil.convex_hull.vertices if len(teil.vertices) > 2000 else teil.vertices
+
+    def bewerte(netz, rot):
+        _, k = ueberhang(netz, rot, winkel)
+        faktor = teil.area / max(netz.area, 1e-9)
+        k["auflage"] *= faktor
+        k["stuetzvolumen"] *= faktor
+        a = np.ptp(trimesh.transform_points(hull, rot), axis=0)
+        passt_rein = a[2] <= bauraum[2] and (
+            (a[0] <= bauraum[0] and a[1] <= bauraum[1]) or (a[1] <= bauraum[0] and a[0] <= bauraum[1])
+            or np.hypot(a[0], a[1]) <= min(bauraum[0], bauraum[1]))
+        # Weniger Stützmaterial, niedriger und mit guter Auflage ist besser
+        kosten = k["stuetzvolumen"] + 50.0 * k["hoehe"] - 50.0 * min(k["auflage"], 5000.0)
+        if k["auflage"] < 100:
+            kosten += 1e7  # kippelig: weniger als 1 cm² Auflage
+        if not passt_rein:
+            kosten += 1e9
+        return kosten
+
+    kandidaten = []
+    for unten in _richtungen(teil):
+        rot = trimesh.geometry.align_vectors(unten / np.linalg.norm(unten), [0, 0, -1])
+        kandidaten.append((bewerte(probe, rot), rot))
+    kandidaten.sort(key=lambda x: x[0])
+    # Die besten Kandidaten am vollständigen Modell nachrechnen
+    beste = min(((bewerte(teil, rot), rot) for _, rot in kandidaten[:8]), key=lambda x: x[0])
+    rot = beste[1]
+    # Um Z drehen, bis es in X/Y passt (in 15°-Schritten)
+    for grad in range(0, 180, 15):
+        m = trimesh.transformations.rotation_matrix(np.radians(grad), [0, 0, 1]) @ rot
+        pts = trimesh.transform_points(hull, m)
+        a = np.ptp(pts, axis=0)
+        if a[0] <= bauraum[0] and a[1] <= bauraum[1]:
+            rot = m
+            break
+    pts = trimesh.transform_points(hull, rot)
+    m = trimesh.transformations.translation_matrix(-pts.min(axis=0)) @ rot
+    _, k = ueberhang(teil, m, winkel)
+    if log:
+        log(f"Beste Lage: Stützfläche ca. {k['stuetzflaeche'] / 100:.0f} cm², Höhe {k['hoehe']:.0f} mm, "
+            f"Auflage {k['auflage'] / 100:.1f} cm²")
+    return m, k
+
+
 def passt(teil, bauraum):
     """Passt das Teil, notfalls um 90° um Z gedreht?"""
     x, y, z = teil.extents
