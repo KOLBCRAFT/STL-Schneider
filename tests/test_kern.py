@@ -202,3 +202,49 @@ def test_automatik_bricht_sauber_ab(zylinder):
             kern.auto_zerteile(zylinder, (30, 30, 30), rand=1.0)
     finally:
         kern.MAX_SCHNITTE = alt
+
+
+@pytest.fixture
+def balken():
+    return trimesh.creation.box(extents=[200, 40, 40])
+
+
+def _montage(mesh, ebenen, d):
+    m = kern.Montage()
+    teile, _ = kern.zerteile(mesh, ebenen, d, montage=m)
+    return kern.montage_pruefen(teile, m)
+
+
+@pytest.mark.parametrize("art", ["duebel", "zapfen", "magnet"])
+def test_montage_normaler_schnitt_ohne_befund(balken, art):
+    d = kern.Duebel(2, art=art, tiefe=3 if art == "magnet" else 10)
+    assert _montage(balken, [kern.ebene_achse(0, 0.0), kern.ebene_achse(1, 0.0)], d) == []
+
+
+def test_montage_wand_um_loch(balken):
+    def am_rand(y):
+        return _montage(balken, [(*kern.ebene_achse(0, 0.0), None, np.array([[0.0, y, 0.0]]))], kern.Duebel(1))
+    assert am_rand(15.0) == []  # 1,9 mm Wand
+    assert am_rand(16.5) == [(0, "Dübelloch mit dünner Wand (0.40 mm, empfohlen ab 1.2 mm)"), (1, "Dübelloch mit dünner Wand (0.40 mm, empfohlen ab 1.2 mm)")]
+    assert {t for _, t in am_rand(17.5)} == {"Dübelloch bricht durch die Außenwand"}
+
+
+def test_montage_zapfen_zu_lang(balken):
+    # Hinter dem Schnitt bei x=95 bleiben nur 5 mm, der 10-mm-Zapfen bohrt durch
+    assert _montage(balken, [kern.ebene_achse(0, 95.0)], kern.Duebel(1, art="zapfen")) == \
+        [(1, "Zapfenloch bricht durch die Außenwand")]
+
+
+def test_montage_schnitt_durch_verbinder_und_anstossen(balken):
+    befunde = _montage(balken, [kern.ebene_achse(0, 0.0), kern.ebene_achse(0, 5.0)], kern.Duebel(2, art="zapfen"))
+    texte = " ".join(t for _, t in befunde)
+    assert "späterer Schnitt geht durch einen Verbinder" in texte
+    assert "stößt beim Zusammenbau an" in texte
+
+
+def test_montage_ueberschneidung():
+    a = trimesh.creation.box(extents=[20, 20, 20])
+    b = a.copy()
+    b.apply_translation([10, 0, 0])
+    assert kern.montage_pruefen([a, b]) == [(0, "stößt beim Zusammenbau an Teil 2 (4000 mm³ Überschneidung)"),
+                                           (1, "stößt beim Zusammenbau an Teil 1 (4000 mm³ Überschneidung)")]

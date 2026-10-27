@@ -87,6 +87,11 @@ Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
   Innen/Außen, entartete Dreiecke, lose Einzelteile. Bei Problemen erscheint „Modell reparieren“ (schließt
   kleine Löcher, richtet Dreiecke aus; rückgängig durch erneutes Öffnen).
 - Nach „Teile berechnen“ steht im Protokoll die Volumenbilanz Modell gegen Teile.
+- Danach wird der Zusammenbau geprüft. Gemeldet wird, wenn die Wand um ein Dübel-, Zapfen- oder Magnetloch
+  dünner als 1,2 mm ist oder das Loch nach außen durchbricht (z.B. Zapfen länger als das Gegenstück dick),
+  wenn ein späterer Schnitt durch einen schon gesetzten Verbinder geht und wenn sich zwei Teile beim
+  Zusammenstecken überschneiden. Betroffene Teile sind orange, die Gründe stehen im Protokoll und auf
+  der Teilekarte. Das Spiel der Passung selbst kann keine Software prüfen, dafür hilft ein Probedruck.
 - Vor dem Speichern wird jedes Teil auf Bauraum und Dichtigkeit geprüft. Bei Problemen fragt das Programm
   nach, statt still zu speichern.
 - Die Automatik bricht mit einer klaren Meldung ab, wenn der Bauraum zu klein ist oder ein Modell in
