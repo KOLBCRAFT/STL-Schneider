@@ -54,10 +54,18 @@ Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
 - **Verbinder**: Dübel (Löcher in beiden Hälften, Dübel als eigene STL), angeformte Zapfen (an der
   größeren Hälfte, passendes Loch in der anderen) oder Löcher für Scheibenmagnete. Anzahl pro
   Schnittfläche, Durchmesser, Tiefe/Länge/Magnethöhe und Spiel sind einstellbar. Die Verbinder werden
-  automatisch mit Abstand zum Rand verteilt. Ist eine Schnittfläche zu klein, steht das im Protokoll.
+  automatisch verteilt: zwei Verbinder an den beiden Enden der Fläche, weitere in die Lücken, immer mit
+  dem Randabstand zur Außenwand, mit Abstand zu Löchern früherer Schnitte und nur dort, wo das Loch über
+  seine ganze Tiefe im Material bleibt (wichtig bei gekrümmten Formen). Passen nicht alle hinein,
+  steht im Protokoll, wie viele es geworden sind.
+- **Dübel und Magnete gemischt**: Bei Dübeln und Zapfen lassen sich unter „Magnete zusätzlich“ weitere
+  Magnete je Schnittfläche einstellen (eigener Durchmesser und eigene Höhe). Die Dübel richten aus und
+  sitzen möglichst weit auseinander, die Magnete halten und kommen in die Lücken dazwischen. In der
+  Vorschau sind Magnete lila. Beim Speichern steht im Protokoll, wie viele Magnete nötig sind.
 - **Verbinder selbst setzen** (manuell): Schnitt in der Liste wählen. Das Modell wird an der Ebene
   aufgeklappt, die Schnittfläche ist orange, die Verbinder als Kugeln (blau = automatisch, orange =
-  selbst gesetzt). Rechtsklick auf die Fläche setzt einen Verbinder, Rechtsklick auf einen Verbinder
+  selbst gesetzt, lila = Magnet). Bei selbst gesetzten Verbindern werden die ersten wie unter „Anzahl“
+  eingestellt Dübel, alle weiteren Magnete. Rechtsklick auf die Fläche setzt einen Verbinder, Rechtsklick auf einen Verbinder
   entfernt ihn. Rechts ziehen zoomt weiterhin.
 - **Rückgängig / Wiederholen**: Strg+Z / Strg+Y oder die Knöpfe unter der Schnittliste, für Schnitte und
   Verbinder.

@@ -230,13 +230,18 @@ def test_montage_wand_um_loch(balken):
 
 
 def test_montage_zapfen_zu_lang(balken):
-    # Hinter dem Schnitt bei x=95 bleiben nur 5 mm, der 10-mm-Zapfen bohrt durch
-    assert _montage(balken, [kern.ebene_achse(0, 95.0)], kern.Duebel(1, art="zapfen")) == \
-        [(1, "Zapfenloch bricht durch die Außenwand")]
+    # Hinter dem Schnitt bei x=95 bleiben nur 5 mm: automatisch kommt dort kein Zapfen hin ...
+    zeilen = []
+    teile, n = kern.zerteile(balken, [kern.ebene_achse(0, 95.0)], kern.Duebel(1, art="zapfen"), log=zeilen.append)
+    assert n == 0 and any("Kein Platz für Verbinder" in z for z in zeilen)
+    # ... von Hand gesetzt bohrt der 10-mm-Zapfen durch, und die Prüfung meldet es
+    hand = [(*kern.ebene_achse(0, 95.0), None, np.array([[95.0, 0.0, 0.0]]))]
+    assert _montage(balken, hand, kern.Duebel(1, art="zapfen")) == [(1, "Zapfenloch bricht durch die Außenwand")]
 
 
 def test_montage_schnitt_durch_verbinder_und_anstossen(balken):
-    befunde = _montage(balken, [kern.ebene_achse(0, 0.0), kern.ebene_achse(0, 5.0)], kern.Duebel(2, art="zapfen"))
+    ebenen = [kern.ebene_achse(0, 0.0), (*kern.ebene_achse(0, 5.0), None, np.array([[5.0, 0.0, 0.0]]))]
+    befunde = _montage(balken, ebenen, kern.Duebel(2, art="zapfen"))
     texte = " ".join(t for _, t in befunde)
     assert "späterer Schnitt geht durch einen Verbinder" in texte
     assert "stößt beim Zusammenbau an" in texte
@@ -248,3 +253,46 @@ def test_montage_ueberschneidung():
     b.apply_translation([10, 0, 0])
     assert kern.montage_pruefen([a, b]) == [(0, "stößt beim Zusammenbau an Teil 2 (4000 mm³ Überschneidung)"),
                                            (1, "stößt beim Zusammenbau an Teil 1 (4000 mm³ Überschneidung)")]
+
+
+def test_gewuenschte_anzahl_auch_in_schmalen_flaechen():
+    from shapely.geometry import Point, box
+    for flaeche in (box(0, 0, 25, 25), Point(0, 0).buffer(15)):
+        assert [len(kern.duebel_positionen(flaeche, kern.Duebel(a))) for a in (1, 2, 3, 4)] == [1, 2, 3, 4]
+    # Zwei Dübel sitzen an den Enden einer länglichen Fläche, nicht einer in der Mitte
+    a, b = kern.duebel_positionen(box(0, 0, 100, 20), kern.Duebel(2))
+    assert abs(a[0] - b[0]) > 70
+
+
+def test_duebel_und_magnete_gemischt(balken):
+    d = kern.Duebel(2, magnete=2, magnet_durchmesser=8, magnet_hoehe=3)
+    inseln = kern.querschnitt(balken, kern.ebene_achse(0, 0.0), d)
+    assert len(inseln[0].verbinder) == 4
+    m = kern.Montage()
+    teile, n = kern.zerteile(balken, [kern.ebene_achse(0, 0.0)], d, montage=m)
+    assert (n, m.magnete) == (2, 2) and kern.montage_pruefen(teile, m) == []
+    ohne, _ = kern.zerteile(balken, [kern.ebene_achse(0, 0.0)], kern.Duebel(2))
+    # Je Hälfte zwei 8,2 x 3,2 mm Magnetlöcher mehr
+    loch = np.pi * 4.1 ** 2 * 3.2
+    assert sum(t.volume for t in ohne) - sum(t.volume for t in teile) == pytest.approx(4 * loch, rel=0.05)
+    # Bei der Art Magnete gibt es keine zusätzlichen
+    assert kern.Duebel(2, art="magnet", magnete=2).gesamt == 2
+
+
+def test_export_meldet_magnete(balken, tmp_path):
+    d = kern.Duebel(2, magnete=2)
+    m = kern.Montage()
+    teile, n = kern.zerteile(balken, [kern.ebene_achse(0, 0.0)], d, montage=m)
+    zeilen = []
+    kern.exportiere(teile, "b", tmp_path, H2D, duebel=d, anzahl_duebel=n, anzahl_magnete=m.magnete,
+                    log=zeilen.append)
+    assert any("Zusätzlich Magnete nötig: 4 Stück 6 x 3 mm" in z for z in zeilen)
+
+
+def test_loecher_bleiben_im_material():
+    # Schräger dünner Stab: an den Enden der Schnittfläche würde ein Loch seitlich ausbrechen
+    stab = trimesh.creation.box(extents=[200, 30, 40])
+    stab.apply_transform(trimesh.transformations.rotation_matrix(np.radians(25), [0, 0, 1]))
+    m = kern.Montage()
+    teile, n = kern.zerteile(stab, [kern.ebene_achse(0, 0.0)], kern.Duebel(2), montage=m)
+    assert n == 2 and kern.montage_pruefen(teile, m) == []

@@ -288,3 +288,35 @@ def test_pruefung_vor_dem_export(app, tmp_path, monkeypatch):
     assert f._speichern(str(tmp_path)) is False
     assert "Teil 2: stößt beim Zusammenbau an" in fragen[0]
     f.close()
+
+
+def test_duebel_und_magnete(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui.profile, "pfad", lambda: tmp_path / "einstellungen.json")
+    modell = tmp_path / "balken.stl"
+    trimesh.creation.box(extents=[400, 40, 40]).export(modell)
+    f = gui.Fenster()
+    f.show()
+    f._oeffnen(str(modell))
+    assert not f.m_anzahl.isHidden()
+    f.d_art.setCurrentIndex(f.d_art.findData("magnet"))
+    assert f.m_anzahl.isHidden()
+    f.d_art.setCurrentIndex(f.d_art.findData("duebel"))
+    f.m_anzahl.setValue(2)
+    f.manuell.setChecked(True)
+    f.ebene = (np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+    f._plane_widget()
+    f._schnitt_dazu()
+    # Vorschau: 2 Dübel blau, 2 Magnete lila
+    farben = [f.ansicht.actors[n].prop.color.hex_rgb for n in f.ansicht.actors if n.startswith("verbinder")]
+    assert farben.count(gui.MAGNETFARBE) == 2 and len(farben) == 4
+
+    ergebnisse = []
+    f.signale.fertig.disconnect()
+    f.signale.fertig.connect(ergebnisse.append)
+    f._arbeite(f._einstellungen())
+    app.processEvents()
+    f._berechnet(ergebnisse[0])
+    assert "2 Verbinder und 2 Magnete" in f.protokoll.toPlainText()
+    f._speichern(str(tmp_path))
+    assert "Zusätzlich Magnete nötig: 4 Stück" in f.protokoll.toPlainText()
+    f.close()

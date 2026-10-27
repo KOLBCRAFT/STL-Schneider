@@ -64,6 +64,10 @@ class Duebel:
     art "duebel": Löcher in beiden Hälften, Dübel als eigenes Teil. tiefe = Lochtiefe je Seite.
     art "zapfen": Zapfen an einer Hälfte angeformt, Loch in der anderen. tiefe = Zapfenlänge.
     art "magnet": Löcher in beiden Hälften für Scheibenmagnete. tiefe = Magnethöhe.
+
+    Bei Dübeln und Zapfen kommen auf Wunsch magnete zusätzliche Magnetlöcher je Schnittfläche dazu
+    (z.B. Dübel zum Ausrichten, Magnete zum Halten). Die Dübel bekommen die am weitesten
+    auseinanderliegenden Plätze, die Magnete die Lücken dazwischen.
     """
     anzahl: int = 2          # Verbinder pro Schnittfläche
     durchmesser: float = 6.0
@@ -72,35 +76,89 @@ class Duebel:
     randabstand: float = 3.0 # Mindestwand zwischen Loch und Außenkante
     drucken: bool = True     # Dübel als eigene Teile mit ausgeben
     art: str = "duebel"
+    magnete: int = 0         # zusätzliche Magnete je Schnittfläche (nur bei Dübel und Zapfen)
+    magnet_durchmesser: float = 6.0
+    magnet_hoehe: float = 3.0
+
+    @property
+    def zusatz_magnete(self):
+        return self.magnete if self.art != "magnet" else 0
+
+    @property
+    def gesamt(self):
+        """Plätze je Schnittfläche: Verbinder plus zusätzliche Magnete."""
+        return self.anzahl + self.zusatz_magnete
+
+    def ist_magnet(self, j):
+        """Ist der j-te Platz einer Schnittfläche ein zusätzlicher Magnet?"""
+        return j >= self.anzahl and self.zusatz_magnete > 0
+
+    def platz_durchmesser(self, j):
+        return self.magnet_durchmesser if self.ist_magnet(j) else self.durchmesser
 
 
 Verbinder = Duebel
 
 
-def duebel_positionen(flaeche, d: Duebel):
-    """Verteilt d.anzahl Punkte möglichst weit auseinander in einer Schnittfläche (shapely-Polygon)."""
-    # Etwas weiter nach innen als nötig, damit die Dübel nicht direkt an der Außenwand sitzen
-    einzug = d.durchmesser / 2 + d.spiel + d.randabstand + 0.1 * math.sqrt(flaeche.area)
-    innen = flaeche.buffer(-einzug)
-    if innen.is_empty:
-        return []
+def duebel_positionen(flaeche, d: Duebel, frei=None):
+    """Verteilt d.gesamt Punkte möglichst weit auseinander in einer Schnittfläche (shapely-Polygon).
+
+    Erst die Verbinder, dann die zusätzlichen Magnete. Bei großen Flächen bleiben die Verbinder etwas
+    weiter von der Außenwand weg; reicht der Platz dafür nicht, wird nur der Randabstand eingehalten,
+    damit möglichst die gewünschte Anzahl hineinpasst. frei(xy) -> bool-Maske sperrt Plätze, z.B. wo
+    schon Löcher eines früheren Schnitts sitzen.
+    """
+    beste = []
+    for extra in (0.1 * math.sqrt(flaeche.area), 0.0):
+        punkte = _verteilen(flaeche, d, extra, frei)
+        if len(punkte) > len(beste):
+            beste = punkte
+        if len(beste) >= d.gesamt:
+            break
+    return beste
+
+
+def _verteilen(flaeche, d: Duebel, extra, frei=None):
     from shapely.geometry import Point
     from shapely.ops import polylabel
 
-    groesstes = max(getattr(innen, "geoms", [innen]), key=lambda g: g.area)
-    punkte = [np.array(polylabel(groesstes, tolerance=0.5).coords[0])]
-    if d.anzahl > 1:
-        x0, y0, x1, y1 = innen.bounds
-        schritt = max(min(x1 - x0, y1 - y0) / 30, 0.5)
-        gx, gy = np.meshgrid(np.arange(x0, x1 + schritt, schritt), np.arange(y0, y1 + schritt, schritt))
-        raster = [np.array(p) for p in zip(gx.ravel(), gy.ravel()) if innen.contains(Point(p))]
-        mindest = d.durchmesser + 2 * d.spiel + d.randabstand
-        while len(punkte) < d.anzahl and raster:
-            abst = [min(np.linalg.norm(p - q) for q in punkte) for p in raster]
-            i = int(np.argmax(abst))
-            if abst[i] < mindest:
-                break
-            punkte.append(raster[i])
+    groesster = max(d.durchmesser, d.magnet_durchmesser if d.zusatz_magnete else 0.0)
+    innen = flaeche.buffer(-(groesster / 2 + d.spiel + d.randabstand + extra))
+    if innen.is_empty:
+        return []
+    teile = sorted(getattr(innen, "geoms", [innen]), key=lambda g: g.area, reverse=True)
+    mitte = np.array(polylabel(teile[0], tolerance=0.5).coords[0])
+    # Kandidaten: Raster in der Fläche plus Punkte entlang des Randes (für schmale Flächen)
+    x0, y0, x1, y1 = innen.bounds
+    schritt = max(min(x1 - x0, y1 - y0) / 30, 0.25)
+    gx, gy = np.meshgrid(np.arange(x0, x1 + schritt, schritt), np.arange(y0, y1 + schritt, schritt))
+    raster = [np.array(p) for p in zip(gx.ravel(), gy.ravel()) if innen.contains(Point(p))]
+    for g in teile:
+        rand = g.exterior
+        raster += [np.array(rand.interpolate(t).coords[0]) for t in np.arange(0, rand.length, schritt)]
+    raster = np.array(raster + [mitte])
+    if frei is not None:
+        raster = raster[frei(raster)]
+        if not len(raster):
+            return []
+    if d.gesamt == 1:
+        return [raster[int(np.argmin(np.linalg.norm(raster - mitte, axis=1)))]]
+    mindest = groesster + 2 * d.spiel + d.randabstand
+    # Mit dem Punkt beginnen, der am weitesten von der Mitte weg liegt, dann jeweils den am weitesten
+    # von allen bisherigen entfernten nehmen: zwei Verbinder sitzen so an den beiden Enden der Fläche.
+    abst = np.linalg.norm(raster - mitte, axis=1)
+    punkte = [raster[int(np.argmax(abst))]]
+    abst = np.linalg.norm(raster - punkte[0], axis=1)
+    while len(punkte) < d.gesamt:
+        i = int(np.argmax(abst))
+        if abst[i] < mindest:
+            break
+        punkte.append(raster[i])
+        abst = np.minimum(abst, np.linalg.norm(raster - raster[i], axis=1))
+    if d.anzahl == 1 and len(punkte) > 1:
+        # Ein einzelner Verbinder gehört in die Mitte, die Magnete außen herum
+        k = int(np.argmin([np.linalg.norm(q - mitte) for q in punkte]))
+        punkte.insert(0, punkte.pop(k))
     return punkte
 
 
@@ -153,10 +211,21 @@ class Insel:
     manuell: bool = False    # Verbinder von Hand gesetzt
 
 
-def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, punkte=None):
+def _abstand_zu_strecken(punkte, strecken):
+    """Kleinster Abstand jedes Punkts (N x 3) zu Strecken [(anfang, ende, radius)], abzüglich radius."""
+    ergebnis = np.full(len(punkte), np.inf)
+    for a, b, r in strecken:
+        ab = b - a
+        t = np.clip((punkte - a) @ ab / max(ab @ ab, 1e-12), 0, 1)
+        ergebnis = np.minimum(ergebnis, np.linalg.norm(punkte - (a + t[:, None] * ab), axis=1) - r)
+    return ergebnis
+
+
+def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, punkte=None, belegt=()):
     """Inseln des Querschnitts mit den geplanten Verbinder-Positionen.
 
     punkte: von Hand gesetzte Verbinder (3D). Sie ersetzen auf ihrer Insel die automatischen.
+    belegt: schon gebohrte Löcher früherer Schnitte [(anfang, ende, radius)], neue Verbinder halten Abstand.
     """
     origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
     normal = normal / np.linalg.norm(normal)
@@ -169,11 +238,34 @@ def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, pun
         xy = np.asarray(xy, float).reshape(-1, 2)
         return trimesh.transform_points(np.column_stack([xy, np.zeros(len(xy))]), nach_3d)
 
+    frei = None
+    if belegt and duebel:
+        tiefe = max(duebel.tiefe, duebel.magnet_hoehe if duebel.zusatz_magnete else 0.0) + 0.5
+        r = max(duebel.durchmesser, duebel.magnet_durchmesser if duebel.zusatz_magnete else 0.0) / 2 + duebel.spiel
+
+        def frei(xy):
+            # Achse des neuen Lochs in beide Richtungen abtasten, Abstand zu den alten Löchern messen
+            mitten = zu_3d(xy)
+            abstand = np.full(len(mitten), np.inf)
+            for t in np.linspace(-tiefe, tiefe, 9):
+                abstand = np.minimum(abstand, _abstand_zu_strecken(mitten + t * normal, belegt))
+            return abstand > r + MIN_WAND
+
     eigene_2d = []
     if punkte is not None and len(punkte):
         eigene_2d = trimesh.transform_points(np.asarray(punkte, float), np.linalg.inv(nach_3d))[:, :2]
 
     from shapely.geometry import Point
+    from shapely.ops import unary_union
+    tief = None
+    if duebel and duebel.anzahl > 0:
+        # Querschnitte vor und hinter der Ebene: ein Loch muss über seine ganze Tiefe im Material bleiben,
+        # sonst bricht es bei gekrümmten Formen (z.B. Geweih) seitlich aus
+        t = max(duebel.tiefe, duebel.magnet_hoehe if duebel.zusatz_magnete else 0.0) + 0.5
+        tief = []
+        for schnitt in schnitt_2d(mesh, origin, normal, [f * t for f in (-1, -0.75, -0.5, -0.25, 0.25, 0.5, 0.75, 1)]):
+            tief.append(unary_union(list(schnitt.polygons_full)) if schnitt is not None else None)
+
     inseln = []
     for flaeche in eben.polygons_full:
         rand = zu_3d(np.asarray(flaeche.exterior.coords))
@@ -185,7 +277,10 @@ def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, pun
             if eigene:
                 insel.verbinder, insel.manuell = list(zu_3d(eigene)), True
             else:
-                pos = duebel_positionen(flaeche, duebel)
+                platz = flaeche
+                for weiter in tief:
+                    platz = platz.intersection(weiter) if weiter is not None and not platz.is_empty else Point()
+                pos = duebel_positionen(platz, duebel, frei) if not platz.is_empty else []
                 insel.verbinder = list(zu_3d(pos)) if pos else []
         inseln.append(insel)
     return inseln
@@ -203,16 +298,23 @@ def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = No
     if montage is not None:
         montage.schnitt_durch_verbinder(mesh, origin, normal)
 
-    alle = querschnitt(mesh, (origin, normal), duebel, fenster, punkte)
+    alle = querschnitt(mesh, (origin, normal), duebel, fenster, punkte,
+                       montage.verbinder if montage is not None else ())
     if not any(i.gewaehlt for i in alle):
         return [mesh], 0
     inseln = [(i.flaeche, i.innen, i.gewaehlt) for i in alle]
 
-    mitten = []
+    mitten, magnete = [], []
     for i in alle:
-        if i.gewaehlt and duebel and duebel.anzahl > 0 and not i.verbinder and log:
-            log(f"  Schnittfläche zu klein für Verbinder ({i.flaeche.area:.0f} mm²)")
-        mitten += i.verbinder
+        if i.gewaehlt and duebel and duebel.anzahl > 0 and log:
+            if not i.verbinder:
+                log(f"  Kein Platz für Verbinder ({i.flaeche.area:.0f} mm² Schnittfläche, zu klein oder "
+                    "das Teil ist dahinter zu dünn)")
+            elif len(i.verbinder) < duebel.gesamt and not i.manuell:
+                log(f"  Nur Platz für {len(i.verbinder)} von {duebel.gesamt} Verbindern "
+                    f"({i.flaeche.area:.0f} mm²)")
+        for j, p in enumerate(i.verbinder):
+            (magnete if duebel.ist_magnet(j) else mitten).append(p)
 
     haelften = {}
     for seite in (-1, 1):
@@ -220,8 +322,8 @@ def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = No
         if t is not None and len(t.faces):
             haelften[seite] = t
 
-    if mitten and len(haelften) == 2:
-        haelften = verbinder_anbringen(haelften, mitten, normal, duebel, montage)
+    if (mitten or magnete) and len(haelften) == 2:
+        haelften = verbinder_anbringen(haelften, mitten, normal, duebel, montage, magnete)
     haelften = list(haelften.items())
 
     if all(i[2] for i in inseln):
@@ -279,8 +381,23 @@ def _zapfen(d: Duebel, normal, mitte):
     return z
 
 
-def verbinder_anbringen(haelften, mitten, normal, d: Duebel, montage=None):
-    """Bohrt Löcher bzw. formt Zapfen an. haelften: {-1: unten, 1: oben} relativ zur Normalen."""
+def verbinder_anbringen(haelften, mitten, normal, d: Duebel, montage=None, magnete=()):
+    """Bohrt Löcher bzw. formt Zapfen an. haelften: {-1: unten, 1: oben} relativ zur Normalen.
+
+    magnete: Mitten der zusätzlichen Magnetlöcher (in beiden Hälften).
+    """
+    if magnete:
+        r = (d.magnet_durchmesser + d.spiel) / 2
+        tiefe = d.magnet_hoehe + 0.2
+        if montage is not None:
+            montage.magnete += len(magnete)
+            for seite, t in haelften.items():
+                for m in magnete:
+                    montage.loch(t, m, seite * normal, r, tiefe, "Magnetloch")
+        loecher = [_zylinder(r, -tiefe, tiefe, normal, m) for m in magnete]
+        haelften = {s: trimesh.boolean.difference([t] + loecher, engine="manifold") for s, t in haelften.items()}
+    if not mitten:
+        return haelften
     r_loch = (d.durchmesser + d.spiel) / 2
     if d.art == "zapfen":
         # Zapfen an die größere Hälfte, Loch in die kleinere
@@ -345,6 +462,7 @@ class Montage:
     """Sammelt beim Schneiden die Verbinder und was beim Zusammenbau Probleme machen kann."""
     verbinder: list = field(default_factory=list)  # (anfang, ende, radius) entlang der Lochachse
     befunde: list = field(default_factory=list)    # (punkt, text)
+    magnete: int = 0                                # gesetzte zusätzliche Magnete (Paare)
 
     def loch(self, teil, mitte, richtung, radius, tiefe, name):
         mitte = np.asarray(mitte, float)
@@ -453,6 +571,7 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None, mon
     """
     offen, fertig = [mesh], []
     zaehler = schnitte = 0
+    montage = montage if montage is not None else Montage()  # damit neue Verbinder alten ausweichen
     zapfen = duebel.tiefe if duebel and duebel.art == "zapfen" and duebel.anzahl > 0 else 0.0
     if min(bauraum) - 2 * rand - zapfen <= 1.0:
         raise ValueError(f"Bauraum {min(bauraum):g} mm ist zu klein für {rand:g} mm Rand"
@@ -524,6 +643,7 @@ def automatisch(mesh, bauraum, rand=3.0, duebel=None, log=print, montage=None):
     if montage is not None:
         montage.verbinder += erste.verbinder
         montage.befunde += erste.befunde
+        montage.magnete += erste.magnete
     return beste
 
 
@@ -545,6 +665,7 @@ def wird_geschnitten(teil, ebene):
 def zerteile(mesh, ebenen, duebel=None, log=None, montage=None):
     """Schneidet an Ebenen (punkt, normale[, fenster[, verbinder_punkte]]). Rückgabe: (teile, anzahl_verbinder)"""
     teile, zaehler = [mesh], 0
+    montage = montage if montage is not None else Montage()  # damit neue Verbinder alten ausweichen
     for ebene in ebenen:
         neu = []
         for t in teile:
@@ -770,8 +891,9 @@ def passt(teil, bauraum):
 
 
 def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=None, anzahl_duebel=0, log=print,
-               lagen=None):
-    """lagen: {index: 4x4-Matrix} für Teile, die von Hand im Bauraum platziert wurden."""
+               lagen=None, anzahl_magnete=0):
+    """lagen: {index: 4x4-Matrix} für Teile, die von Hand im Bauraum platziert wurden.
+    anzahl_magnete: zusätzliche Magnetlöcher (je eins in beiden Hälften) neben Dübeln oder Zapfen."""
     ordner = Path(ordner)
     ordner.mkdir(parents=True, exist_ok=True)
     fuer_3mf = []
@@ -801,6 +923,10 @@ def exportiere(teile, name, ordner, bauraum, drehen=True, dreimf=False, duebel=N
         log(f"{anzahl_duebel} Dübel {duebel.durchmesser:g} x {2 * duebel.tiefe - 0.6:g} mm -> {datei.name}")
     elif anzahl_duebel:
         log(f"{anzahl_duebel} Dübellöcher für {duebel.durchmesser:g} mm Dübel, {duebel.tiefe:g} mm tief pro Seite")
+    if duebel and anzahl_magnete:
+        log(f"Zusätzlich Magnete nötig: {2 * anzahl_magnete} Stück {duebel.magnet_durchmesser:g} x "
+            f"{duebel.magnet_hoehe:g} mm (Löcher {duebel.magnet_durchmesser + duebel.spiel:g} x "
+            f"{duebel.magnet_hoehe + 0.2:g} mm). Polung beim Einkleben beachten!")
     dreimf_datei = None
     if dreimf:
         szene = trimesh.Scene()
@@ -842,6 +968,10 @@ def main():
                    help="duebel, zapfen (angeformt) oder magnet (Löcher für Scheibenmagnete)")
     p.add_argument("--duebel", type=int, default=2, help="Verbinder pro Schnittfläche (0 = keine)")
     p.add_argument("--duebel-durchmesser", type=float, default=6.0)
+    p.add_argument("--magnete", type=int, default=0,
+                   help="Zusätzliche Magnete je Schnittfläche neben Dübeln oder Zapfen")
+    p.add_argument("--magnet-durchmesser", type=float, default=6.0)
+    p.add_argument("--magnet-hoehe", type=float, default=3.0)
     p.add_argument("--duebel-tiefe", type=float, default=10.0,
                    help="Dübel: Lochtiefe je Seite, Zapfen: Zapfenlänge, Magnet: Magnethöhe (mm)")
     p.add_argument("--duebel-spiel", type=float, default=0.2, help="Loch so viel größer als der Dübel")
@@ -866,7 +996,8 @@ def main():
     duebel = None
     if a.duebel > 0:
         duebel = Duebel(a.duebel, a.duebel_durchmesser, a.duebel_tiefe, a.duebel_spiel,
-                        drucken=not a.keine_duebel_teile, art=a.verbinder)
+                        drucken=not a.keine_duebel_teile, art=a.verbinder, magnete=a.magnete,
+                        magnet_durchmesser=a.magnet_durchmesser, magnet_hoehe=a.magnet_hoehe)
 
     montage = Montage()
     if a.schnitt:
@@ -879,7 +1010,7 @@ def main():
         print(f"Zusammenbau: Teil {i + 1} {text}")
     aus = a.aus or pfad.with_name(pfad.stem + "_teile")
     datei = exportiere(teile, pfad.stem, aus, bauraum, drehen=not a.nicht_drehen, dreimf=a.dreimf or a.bambu,
-                       duebel=duebel, anzahl_duebel=n)
+                       duebel=duebel, anzahl_duebel=n, anzahl_magnete=montage.magnete)
     if a.bambu:
         import bambu_studio
         programm = bambu_studio.finde()
