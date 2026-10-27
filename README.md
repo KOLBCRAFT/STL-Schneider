@@ -81,6 +81,23 @@ Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
   „C:\Programme\Bambu Studio“). Liegt es woanders, in den Einstellungen (⚙) mit „Wählen …“ die
   `bambu-studio.exe` angeben, der Pfad wird gemerkt.
 
+## Prüfungen
+
+- Beim Öffnen wird das Modell geprüft: offene Kanten, uneinheitlich ausgerichtete Dreiecke, vertauschtes
+  Innen/Außen, entartete Dreiecke, lose Einzelteile. Bei Problemen erscheint „Modell reparieren“ (schließt
+  kleine Löcher, richtet Dreiecke aus; rückgängig durch erneutes Öffnen).
+- Nach „Teile berechnen“ steht im Protokoll die Volumenbilanz Modell gegen Teile.
+- Vor dem Speichern wird jedes Teil auf Bauraum und Dichtigkeit geprüft. Bei Problemen fragt das Programm
+  nach, statt still zu speichern.
+- Die Automatik bricht mit einer klaren Meldung ab, wenn der Bauraum zu klein ist oder ein Modell in
+  unsinnig viele Stücke zerfiele.
+
+## Tests
+
+`python -m pytest` oder einfach `pytest` im Programmordner. Die Oberflächen-Tests brauchen einen Bildschirm
+(unter Linux ohne Bildschirm: `xvfb-run -a pytest`). Bei jedem Push laufen alle Tests automatisch auf GitHub,
+unter Windows und Linux.
+
 ## Kommandozeile
 
 ```

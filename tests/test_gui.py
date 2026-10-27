@@ -246,3 +246,35 @@ def test_einstellungen(app, tmp_path, monkeypatch):
     assert not g.raster_an.isChecked() and not g.glanz.isChecked()
     assert g.maus3d_tempo.value() == 15 and g.maus3d_umkehren.isChecked()
     g.close()
+
+
+def test_pruefung_vor_dem_export(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui.profile, "pfad", lambda: tmp_path / "einstellungen.json")
+    modell = tmp_path / "loch.stl"
+    z = trimesh.creation.cylinder(radius=60, height=500)
+    z.update_faces(np.arange(1, len(z.faces)))
+    z.export(modell)
+    f = gui.Fenster()
+    f.show()
+    f._oeffnen(str(modell))
+    assert f.k_reparieren.isVisibleTo(f) and "nicht geschlossen" in f.info.text()
+    f._reparieren()
+    assert f.mesh.is_watertight and not f.k_reparieren.isVisibleTo(f)
+
+    ergebnisse = []
+    f.signale.fertig.disconnect()
+    f.signale.fertig.connect(ergebnisse.append)
+    f._arbeite(f._einstellungen())
+    app.processEvents()
+    f._berechnet(ergebnisse[0])
+    assert "Volumen: Modell" in f.protokoll.toPlainText()
+
+    # Zu kleiner Bauraum: vor dem Speichern wird gefragt, „Nein“ speichert nichts
+    teile, n, e = f.ergebnis
+    f.ergebnis = (teile, n, dict(e, bauraum=(50, 50, 50)))
+    fragen = []
+    monkeypatch.setattr(f, "_frage", lambda titel, text: fragen.append(text) or False)
+    assert f._speichern(str(tmp_path)) is False
+    assert fragen and "passt nicht in den Bauraum" in fragen[0]
+    assert not (tmp_path / "loch_teile").exists()
+    f.close()

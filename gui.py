@@ -216,6 +216,12 @@ class Fenster(QtWidgets.QMainWindow):
         self.info = QtWidgets.QLabel("Noch keine Datei geladen")
         self.info.setWordWrap(True)
         form.addRow(self.info)
+        self.k_reparieren = QtWidgets.QPushButton("Modell reparieren")
+        self.k_reparieren.setToolTip("Kleine Löcher schließen, Dreiecke einheitlich ausrichten, entartete Dreiecke "
+                                     "entfernen. Rückgängig: Datei neu öffnen.")
+        self.k_reparieren.clicked.connect(self._reparieren)
+        self.k_reparieren.setVisible(False)
+        form.addRow(self.k_reparieren)
         zeile = QtWidgets.QHBoxLayout()
         self.massstab = self._zahl(100, 0.1, 100000, 1, 10)
         self.massstab.setSuffix(" %")
@@ -688,7 +694,7 @@ class Fenster(QtWidgets.QMainWindow):
     @staticmethod
     def _modell_aus(mime):
         for url in mime.urls() if mime.hasUrls() else []:
-            pfad = url.toLocalFile()
+            pfad = str(Path(url.toLocalFile()))  # Windows: Backslashes wie im Dateidialog
             if Path(pfad).suffix.lower() in (".stl", ".3mf", ".obj"):
                 return pfad
         return None
@@ -752,6 +758,8 @@ class Fenster(QtWidgets.QMainWindow):
             feld.setValue(groesse)
             feld.blockSignals(False)
         self._log(f"Geladen: {self.pfad.name}")
+        if self.hinweise:
+            self._log("Modellprüfung: " + "; ".join(self.hinweise) + ". „Modell reparieren“ kann helfen.")
         self._zuletzt_merken(self.pfad)
         self._zeige_modell()
         self.ansicht.reset_camera()
@@ -763,13 +771,31 @@ class Fenster(QtWidgets.QMainWindow):
         if self.faktor != 1.0:
             o = self.original.extents
             text += f"\nOriginal {o[0]:.1f} × {o[1]:.1f} × {o[2]:.1f} mm"
-        if not self.mesh.is_watertight:
-            text += "\nAchtung: Modell ist nicht geschlossen"
+        self.hinweise = kern.modell_pruefen(self.mesh)
+        if self.hinweise:
+            text += "\nAchtung: " + "; ".join(self.hinweise)
+        self.k_reparieren.setVisible(bool(self.hinweise))
         self.info.setText(text)
         for feld, wert in zip([self.massstab, *self.groesse], [self.faktor * 100, x, y, z]):
             feld.blockSignals(True)
             feld.setValue(wert)
             feld.blockSignals(False)
+
+    def _reparieren(self):
+        if self.mesh is None:
+            return
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            um = self.original.bounds[0]
+            self.original = kern.repariere(self.original, log=self._log)
+            # Reparatur verschiebt nichts, gesetzte Schnitte und Maßstab bleiben gültig
+            self.mesh = kern.skaliere(self.original, self.faktor, um) if self.faktor != 1.0 else self.original
+            self.modell_pv = zu_pyvista(self.mesh)
+            self._halb_schluessel = None
+            self._groesse_anzeigen()
+            self._zeige_modell()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def _groesse_gewaehlt(self, achse):
         if self.mesh is None:
@@ -1332,6 +1358,11 @@ class Fenster(QtWidgets.QMainWindow):
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
         self._log(f"{len(teile)} Teile, {n} Verbinder. {passt} von {len(teile)} passen auf die Platte. "
                   "Mit „Speichern …“ ausgeben oder direkt „In Bambu Studio öffnen“.")
+        bilanz = kern.volumen_bilanz(self.mesh, teile)
+        if bilanz:
+            vorher, nachher = bilanz
+            self._log(f"Volumen: Modell {vorher / 1000:.1f} cm³, Teile zusammen {nachher / 1000:.1f} cm³ "
+                      f"({(nachher - vorher) / vorher * 100:+.1f} %, durch Löcher und Zapfen)")
         self.lagen = {}
         self.huellen = [t.convex_hull.vertices if len(t.vertices) > 2000 else t.vertices for t in teile]
         self.teile_liste.blockSignals(True)
@@ -1340,7 +1371,8 @@ class Fenster(QtWidgets.QMainWindow):
             passt = kern.passt_irgendwie(t, e["bauraum"])
             x, y, z = sorted(t.extents, reverse=True)
             eintrag = QtWidgets.QListWidgetItem(f"Teil {i + 1}\n{x:.0f} × {y:.0f} × {z:.0f} mm · "
-                                                + ("passt" if passt else "zu groß"))
+                                                + ("passt" if passt else "zu groß")
+                                                + ("" if t.is_watertight else " · nicht geschlossen"))
             symbol = vorschaubild(t, (PASST_TOENE if passt else ZU_GROSS_TOENE)[i % 2], passt)
             if symbol is not None:
                 eintrag.setIcon(symbol)
@@ -1562,7 +1594,7 @@ class Fenster(QtWidgets.QMainWindow):
 
     def _speichern(self, ordner=None, dreimf=None):
         """Liefert den Pfad der 3MF (oder None), False wenn nichts gespeichert wurde."""
-        if self.ergebnis is None:
+        if self.ergebnis is None or not self._vor_dem_export():
             return False
         gewaehlt = not ordner
         if not ordner:
@@ -1584,6 +1616,23 @@ class Fenster(QtWidgets.QMainWindow):
         if gewaehlt and hasattr(os, "startfile"):
             os.startfile(ziel)
         return datei
+
+    def _frage(self, titel, text):
+        antwort = QtWidgets.QMessageBox.question(self, titel, text)
+        return antwort == QtWidgets.QMessageBox.StandardButton.Yes
+
+    def _vor_dem_export(self):
+        """Prüft alle Teile; bei Problemen erst nachfragen statt still zu speichern."""
+        teile, _, e = self.ergebnis
+        probleme = kern.pruefe_teile(teile, e["bauraum"], self.lagen)
+        if not probleme:
+            return True
+        zeilen = [f"Teil {i + 1}: {text}" for i, text in probleme]
+        for z in zeilen:
+            self._log("Prüfung: " + z)
+        return self._frage("Teile prüfen", "Vor dem Speichern sind Probleme aufgefallen:\n\n"
+                           + "\n".join(zeilen[:15]) + ("\n…" if len(zeilen) > 15 else "")
+                           + "\n\nTrotzdem speichern?")
 
     # --- Bambu Studio ---
     def _bambu_programm(self):

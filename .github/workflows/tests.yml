@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Kern-Tests
+        run: python -m pytest -q tests/test_kern.py --junitxml=kern.xml
+      - name: Oberflächen-Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -X faulthandler -m pytest -q tests/test_gui.py --junitxml=gui.xml
+      - name: Fehler melden
+        if: failure()
+        run: python .github/fehler_melden.py kern.xml gui.xml
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Alle Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -m pytest -q --junitxml=alle.xml
+      - name: Fehler melden
+        if: failure()
+        run: python .github/fehler_melden.py alle.xml
