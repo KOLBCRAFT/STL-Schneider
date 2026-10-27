@@ -12,7 +12,7 @@ Beispiele:
 """
 import argparse
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -191,14 +191,17 @@ def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, pun
     return inseln
 
 
-def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None, punkte=None):
+def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None, punkte=None, montage=None):
     """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt die Schnittflächen.
 
     Mit duebel werden Verbinder angebracht, mit fenster wird nur innerhalb des Fensters geschnitten,
-    punkte sind von Hand gesetzte Verbinder-Positionen. Rückgabe: (teile, anzahl_verbinder).
+    punkte sind von Hand gesetzte Verbinder-Positionen. montage sammelt Verbinder und Befunde für
+    montage_pruefen(). Rückgabe: (teile, anzahl_verbinder).
     """
     origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
     normal = normal / np.linalg.norm(normal)
+    if montage is not None:
+        montage.schnitt_durch_verbinder(mesh, origin, normal)
 
     alle = querschnitt(mesh, (origin, normal), duebel, fenster, punkte)
     if not any(i.gewaehlt for i in alle):
@@ -218,7 +221,7 @@ def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = No
             haelften[seite] = t
 
     if mitten and len(haelften) == 2:
-        haelften = verbinder_anbringen(haelften, mitten, normal, duebel)
+        haelften = verbinder_anbringen(haelften, mitten, normal, duebel, montage)
     haelften = list(haelften.items())
 
     if all(i[2] for i in inseln):
@@ -276,21 +279,128 @@ def _zapfen(d: Duebel, normal, mitte):
     return z
 
 
-def verbinder_anbringen(haelften, mitten, normal, d: Duebel):
+def verbinder_anbringen(haelften, mitten, normal, d: Duebel, montage=None):
     """Bohrt Löcher bzw. formt Zapfen an. haelften: {-1: unten, 1: oben} relativ zur Normalen."""
     r_loch = (d.durchmesser + d.spiel) / 2
     if d.art == "zapfen":
         # Zapfen an die größere Hälfte, Loch in die kleinere
         traeger = max(haelften, key=lambda s: haelften[s].volume)
         richtung = -traeger * normal  # zeigt aus der Schnittfläche des Trägers heraus
+        if montage is not None:
+            for m in mitten:
+                montage.loch(haelften[-traeger], m, richtung, r_loch, d.tiefe + 0.3, "Zapfenloch")
         zapfen = [_zapfen(d, richtung, m) for m in mitten]
         loecher = [_zylinder(r_loch, -0.5, d.tiefe + 0.3, richtung, m) for m in mitten]
         haelften[traeger] = trimesh.boolean.union([haelften[traeger]] + zapfen, engine="manifold")
         haelften[-traeger] = trimesh.boolean.difference([haelften[-traeger]] + loecher, engine="manifold")
         return haelften
     zusatz = 0.5 if d.art == "duebel" else 0.2
+    if montage is not None:
+        name = "Dübelloch" if d.art == "duebel" else "Magnetloch"
+        for seite, t in haelften.items():
+            for m in mitten:
+                montage.loch(t, m, seite * normal, r_loch, d.tiefe + zusatz, name)
     loecher = [_zylinder(r_loch, -(d.tiefe + zusatz), d.tiefe + zusatz, normal, m) for m in mitten]
     return {s: trimesh.boolean.difference([t] + loecher, engine="manifold") for s, t in haelften.items()}
+
+
+MIN_WAND = 1.2  # mm, etwa drei Wandlinien mit 0,4er Düse
+
+
+def wand_um_loch(teil, mitte, richtung, radius, tiefe):
+    """Dünnste Wand (mm) um ein geplantes Loch, 0 wenn es durchbricht, None wenn nicht messbar.
+
+    richtung zeigt von der Schnittfläche ins Material. Gemessen wird vor dem Bohren vom Lochrand zur
+    nächsten Außenfläche des Teils, die Schnittfläche selbst zählt nicht.
+    """
+    if not teil.is_watertight:
+        return None
+    n = np.asarray(richtung, float) / np.linalg.norm(richtung)
+    u, v = ebenen_achsen(n)
+    winkel = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    kreis = np.outer(np.cos(winkel), u) + np.outer(np.sin(winkel), v)
+    punkte = [mitte + t * n + radius * kreis for t in np.linspace(min(0.5, tiefe / 2), tiefe, 8)]
+    punkte += [mitte + tiefe * n + r * kreis for r in (0.0, 0.5 * radius)]
+    punkte = np.vstack(punkte)
+    # Nur Dreiecke rund ums Loch ansehen (weiter weg ist die Wand ohnehin dick genug) und die
+    # Schnittfläche (Ebene durch mitte, Normale gegen richtung) aus der Messung nehmen
+    reichweite = tiefe + radius + 2 * MIN_WAND
+    dreiecke = teil.triangles
+    nah = np.all(dreiecke.min(axis=1) <= mitte + reichweite, axis=1) & \
+        np.all(dreiecke.max(axis=1) >= mitte - reichweite, axis=1)
+    schnitt = (np.abs((teil.triangles_center - mitte) @ n) < 1e-3) & (teil.face_normals @ n < -0.999)
+    auswahl = np.flatnonzero(nah & ~schnitt)
+    if not len(auswahl):
+        return reichweite
+    rest = teil.submesh([auswahl], append=True)
+    # Nächster Punkt der Außenfläche; liegt der Lochpunkt vor dieser Fläche, ist er außerhalb.
+    # (teil.contains wäre genauer, braucht bei großen Modellen aber Minuten und viele GB Speicher)
+    naechste, abstaende, dreieck = trimesh.proximity.closest_point(rest, punkte)
+    aussen = np.einsum("ij,ij->i", punkte - naechste, rest.face_normals[dreieck]) > 1e-6
+    return 0.0 if aussen.any() else float(abstaende.min())
+
+
+@dataclass
+class Montage:
+    """Sammelt beim Schneiden die Verbinder und was beim Zusammenbau Probleme machen kann."""
+    verbinder: list = field(default_factory=list)  # (anfang, ende, radius) entlang der Lochachse
+    befunde: list = field(default_factory=list)    # (punkt, text)
+
+    def loch(self, teil, mitte, richtung, radius, tiefe, name):
+        mitte = np.asarray(mitte, float)
+        n = np.asarray(richtung, float) / np.linalg.norm(richtung)
+        self.verbinder.append((mitte - tiefe * n, mitte + tiefe * n, radius))
+        wand = wand_um_loch(teil, mitte, n, radius, tiefe)
+        if wand is None:
+            return
+        # Ein Punkt auf der Lochwand kurz hinter der Schnittfläche gehört sicher zum gebohrten Teil
+        ort = mitte + min(0.5, tiefe / 2) * n + radius * ebenen_achsen(n)[0]
+        if wand <= 0:
+            self.befunde.append((ort, f"{name} bricht durch die Außenwand"))
+        elif wand < MIN_WAND:
+            self.befunde.append((ort, f"{name} mit dünner Wand ({wand:.2f} mm, empfohlen ab {MIN_WAND:g} mm)"))
+
+    def schnitt_durch_verbinder(self, teil, punkt, normal):
+        """Ein weiterer Schnitt, der einen schon angebrachten Verbinder durchtrennt."""
+        lo, hi = teil.bounds[0] - 1.0, teil.bounds[1] + 1.0
+        for anfang, ende, radius in self.verbinder:
+            a, b = (anfang - punkt) @ normal, (ende - punkt) @ normal
+            if a * b >= 0 or abs(a + b) < 2e-3:  # Verbinder dieses Schnitts sitzen mittig auf der Ebene
+                continue
+            treffer = anfang + (ende - anfang) * (a / (a - b))
+            if np.all(treffer >= lo) and np.all(treffer <= hi):
+                self.befunde.append((treffer, "ein späterer Schnitt geht durch einen Verbinder"))
+
+
+def montage_pruefen(teile, montage=None, grenze=1.0):
+    """Probleme beim Zusammenbau: [(index, text)].
+
+    Meldet die beim Schneiden gesammelten Befunde (zu dünne Wand um ein Loch, Loch bricht durch,
+    Schnitt durch einen Verbinder) am Teil, zu dem sie gehören, und Teile, die sich zusammengesteckt
+    um mehr als grenze mm³ überschneiden (z.B. ein Zapfen, der auf Material statt in ein Loch trifft).
+    """
+    probleme = []
+    if montage is not None:
+        for punkt, text in montage.befunde:
+            nah = [(float(trimesh.proximity.closest_point(t, [punkt])[1][0]), i) for i, t in enumerate(teile)
+                   if np.all(punkt >= t.bounds[0] - 2.0) and np.all(punkt <= t.bounds[1] + 2.0)]
+            if nah:
+                probleme.append((min(nah)[1], text))
+    for i in range(len(teile)):
+        for k in range(i + 1, len(teile)):
+            a, b = teile[i], teile[k]
+            if np.any(a.bounds[1] < b.bounds[0]) or np.any(b.bounds[1] < a.bounds[0]):
+                continue
+            if not (a.is_watertight and b.is_watertight):
+                continue
+            try:
+                schnitt = trimesh.boolean.intersection([a, b], engine="manifold")
+            except Exception:
+                continue
+            if schnitt is not None and len(schnitt.faces) and abs(schnitt.volume) > grenze:
+                text = f"stößt beim Zusammenbau an Teil {{}} ({abs(schnitt.volume):.0f} mm³ Überschneidung)"
+                probleme += [(i, text.format(k + 1)), (k, text.format(i + 1))]
+    return sorted(set(probleme))
 
 
 def duebel_teile(anzahl, d: Duebel):
@@ -335,7 +445,7 @@ def passt_irgendwie(teil, bauraum, rand=0.0):
 MAX_SCHNITTE = 500  # Notbremse für die Automatik, normale Modelle brauchen weit weniger
 
 
-def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None):
+def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None, montage=None):
     """Schneidet nur Teile, die nicht passen, und legt jeden Schnitt an die dünnste Stelle.
 
     Das gibt meist weniger und schönere Teile als ein starres Gitter, weil Schnitte
@@ -381,7 +491,7 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None):
         pos = kandidaten[int(np.argmin(kosten))]
         if log:
             log(f"Schnitt {'XYZ'[achse]} bei {pos - mesh.bounds[0][achse]:.1f} mm (Fläche {min(flaechen):.0f} mm²)")
-        haelften, n = schneide(t, ebene_achse(achse, pos), duebel, log)
+        haelften, n = schneide(t, ebene_achse(achse, pos), duebel, log, montage=montage)
         zaehler += n
         for h in haelften:
             offen += [s for s in h.split(only_watertight=False) if len(s.faces) > 3]
@@ -395,20 +505,25 @@ def ausrichten(mesh):
     return m
 
 
-def automatisch(mesh, bauraum, rand=3.0, duebel=None, log=print):
+def automatisch(mesh, bauraum, rand=3.0, duebel=None, log=print, montage=None):
     """Probiert das Modell in Originallage und ausgerichtet, nimmt die Variante mit weniger Teilen.
 
     Rückgabe: (teile, anzahl_dübel)
     """
     log("Automatisch: Originallage ...")
-    beste = auto_zerteile(mesh, bauraum, rand, duebel, log=log)
+    erste = Montage()
+    beste = auto_zerteile(mesh, bauraum, rand, duebel, log=log, montage=erste)
     log(f"  {len(beste[0])} Teile")
     if not passt_irgendwie(mesh, bauraum, rand):
         log("Automatisch: ausgerichtet ...")
-        andere = auto_zerteile(ausrichten(mesh), bauraum, rand, duebel, log=log)
+        zweite = Montage()
+        andere = auto_zerteile(ausrichten(mesh), bauraum, rand, duebel, log=log, montage=zweite)
         log(f"  {len(andere[0])} Teile")
         if len(andere[0]) < len(beste[0]):
-            beste = andere
+            beste, erste = andere, zweite
+    if montage is not None:
+        montage.verbinder += erste.verbinder
+        montage.befunde += erste.befunde
     return beste
 
 
@@ -427,7 +542,7 @@ def wird_geschnitten(teil, ebene):
     return abstand.min() < -1e-6 and abstand.max() > 1e-6
 
 
-def zerteile(mesh, ebenen, duebel=None, log=None):
+def zerteile(mesh, ebenen, duebel=None, log=None, montage=None):
     """Schneidet an Ebenen (punkt, normale[, fenster[, verbinder_punkte]]). Rückgabe: (teile, anzahl_verbinder)"""
     teile, zaehler = [mesh], 0
     for ebene in ebenen:
@@ -436,7 +551,7 @@ def zerteile(mesh, ebenen, duebel=None, log=None):
             if wird_geschnitten(t, ebene):
                 fenster = ebene[2] if len(ebene) > 2 else None
                 punkte = ebene[3] if len(ebene) > 3 else None
-                haelften, n = schneide(t, ebene[:2], duebel, log, fenster, punkte)
+                haelften, n = schneide(t, ebene[:2], duebel, log, fenster, punkte, montage)
                 neu += haelften
                 zaehler += n
             else:
@@ -753,12 +868,15 @@ def main():
         duebel = Duebel(a.duebel, a.duebel_durchmesser, a.duebel_tiefe, a.duebel_spiel,
                         drucken=not a.keine_duebel_teile, art=a.verbinder)
 
+    montage = Montage()
     if a.schnitt:
-        teile, n = zerteile(mesh, lies_schnitte(mesh, a.schnitt), duebel, log=print)
+        teile, n = zerteile(mesh, lies_schnitte(mesh, a.schnitt), duebel, log=print, montage=montage)
     elif a.gitter:
-        teile, n = zerteile(mesh, gitter_ebenen(mesh, bauraum, a.rand), duebel, log=print)
+        teile, n = zerteile(mesh, gitter_ebenen(mesh, bauraum, a.rand), duebel, log=print, montage=montage)
     else:
-        teile, n = automatisch(mesh, bauraum, a.rand, duebel)
+        teile, n = automatisch(mesh, bauraum, a.rand, duebel, montage=montage)
+    for i, text in montage_pruefen(teile, montage):
+        print(f"Zusammenbau: Teil {i + 1} {text}")
     aus = a.aus or pfad.with_name(pfad.stem + "_teile")
     datei = exportiere(teile, pfad.stem, aus, bauraum, drehen=not a.nicht_drehen, dreimf=a.dreimf or a.bambu,
                        duebel=duebel, anzahl_duebel=n)

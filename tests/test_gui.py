@@ -277,4 +277,14 @@ def test_pruefung_vor_dem_export(app, tmp_path, monkeypatch):
     assert f._speichern(str(tmp_path)) is False
     assert fragen and "passt nicht in den Bauraum" in fragen[0]
     assert not (tmp_path / "loch_teile").exists()
+
+    # Befund beim Zusammenbau: Protokoll, Teilekarte und Nachfrage vor dem Speichern
+    assert "Zusammenbau geprüft" in f.protokoll.toPlainText()
+    f._berechnet((teile, n, e, [(1, "stößt beim Zusammenbau an Teil 1 (12 mm³ Überschneidung)")]))
+    assert "Zusammenbau: Teil 2 stößt" in f.protokoll.toPlainText()
+    assert "Zusammenbau prüfen" in f.teile_liste.item(1).text()
+    assert "Zusammenbau prüfen" not in f.teile_liste.item(0).text()
+    fragen.clear()
+    assert f._speichern(str(tmp_path)) is False
+    assert "Teil 2: stößt beim Zusammenbau an" in fragen[0]
     f.close()

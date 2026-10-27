@@ -21,6 +21,7 @@ PASST_FARBE = "#40c057"
 ZU_GROSS_FARBE = "#fa5252"
 PASST_TOENE = (PASST_FARBE, "#2b8a3e")
 ZU_GROSS_TOENE = (ZU_GROSS_FARBE, "#c92a2a")
+MONTAGE_TOENE = ("#fd7e14", "#d9480f")  # Orange: passt, aber Problem beim Zusammenbau
 MODELLFARBE = "#adb5bd"
 SCHNITTFARBE = "#d9480f"
 # Leichter Glanz, damit Rillen und Kanten der Oberfläche plastisch wirken
@@ -112,6 +113,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.teil_akteur = None
         self.teil_widget = None
         self.ergebnis = None      # (teile, anzahl_dübel, einstellungen) nach "Teile berechnen"
+        self.montage = []         # [(teil_index, text)] aus kern.montage_pruefen
 
         self.signale = Signale()
         self.signale.log.connect(self._log)
@@ -392,7 +394,8 @@ class Fenster(QtWidgets.QMainWindow):
         self.teile_leer.setProperty("rolle", "hinweis")
         spalte.addWidget(self.teile_leer)
         self.teile_gruppe, form = self._gruppe(spalte, "Teile im Bauraum testen")
-        hilfe = QtWidgets.QLabel("Grün = passt in den Bauraum, rot = zu groß. Teil wählen und in den Bauraum legen. Dann mit den Pfeilen verschieben "
+        hilfe = QtWidgets.QLabel("Grün = passt in den Bauraum, rot = zu groß, orange = Problem beim Zusammenbau "
+                                 "(steht im Protokoll). Teil wählen und in den Bauraum legen. Dann mit den Pfeilen verschieben "
                                  "und mit den Ringen drehen. Die Lage wird beim Speichern übernommen.")
         hilfe.setWordWrap(True)
         form.addRow(hilfe)
@@ -750,7 +753,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.verlauf.clear()
         self.zukunft.clear()
         self._liste_aktualisieren()
-        self.ergebnis = None
+        self.ergebnis, self.montage = None, []
         self.ebene = (self.mesh.bounds.mean(axis=0), np.array([0.0, 0.0, 1.0]))
         groesse = round(float(np.max(self.mesh.extents)) / 3)
         for feld in (self.fenster_b, self.fenster_h):
@@ -837,7 +840,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.ansicht.reset_camera()
 
     def _zeige_modell(self):
-        self.ergebnis = None
+        self.ergebnis, self.montage = None, []
         self.lagen = {}
         self.teile_gruppe.setVisible(False)
         self.teile_leer.setVisible(True)
@@ -1335,11 +1338,13 @@ class Fenster(QtWidgets.QMainWindow):
     def _arbeite(self, e):
         log = self.signale.log.emit
         try:
+            montage = kern.Montage()
             if e["auto"]:
-                teile, n = kern.automatisch(self.mesh, e["bauraum"], duebel=e["duebel"], log=log)
+                teile, n = kern.automatisch(self.mesh, e["bauraum"], duebel=e["duebel"], log=log, montage=montage)
             else:
-                teile, n = kern.zerteile(self.mesh, e["schnitte"], e["duebel"], log=log)
-            self.signale.fertig.emit((teile, n, e))
+                teile, n = kern.zerteile(self.mesh, e["schnitte"], e["duebel"], log=log, montage=montage)
+            log("Prüfe den Zusammenbau ...")
+            self.signale.fertig.emit((teile, n, e, kern.montage_pruefen(teile, montage)))
         except Exception as fehler:
             self.signale.fehler.emit(str(fehler))
 
@@ -1352,8 +1357,9 @@ class Fenster(QtWidgets.QMainWindow):
 
     def _berechnet(self, ergebnis):
         self.k_berechnen.setText("Teile berechnen")
-        teile, n, e = ergebnis
-        self.ergebnis = ergebnis
+        teile, n, e, *montage = ergebnis
+        self.ergebnis = (teile, n, e)
+        self.montage = montage[0] if montage else []
         self._knoepfe()
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
         self._log(f"{len(teile)} Teile, {n} Verbinder. {passt} von {len(teile)} passen auf die Platte. "
@@ -1363,6 +1369,13 @@ class Fenster(QtWidgets.QMainWindow):
             vorher, nachher = bilanz
             self._log(f"Volumen: Modell {vorher / 1000:.1f} cm³, Teile zusammen {nachher / 1000:.1f} cm³ "
                       f"({(nachher - vorher) / vorher * 100:+.1f} %, durch Löcher und Zapfen)")
+        for i, text in self.montage:
+            self._log(f"Zusammenbau: Teil {i + 1} {text}")
+        if self.montage:
+            self.k_protokoll.setChecked(True)
+        else:
+            self._log("Zusammenbau geprüft: Wände um die Löcher dick genug, nichts stößt an.")
+        sorgen = {i for i, _ in self.montage}
         self.lagen = {}
         self.huellen = [t.convex_hull.vertices if len(t.vertices) > 2000 else t.vertices for t in teile]
         self.teile_liste.blockSignals(True)
@@ -1372,8 +1385,9 @@ class Fenster(QtWidgets.QMainWindow):
             x, y, z = sorted(t.extents, reverse=True)
             eintrag = QtWidgets.QListWidgetItem(f"Teil {i + 1}\n{x:.0f} × {y:.0f} × {z:.0f} mm · "
                                                 + ("passt" if passt else "zu groß")
-                                                + ("" if t.is_watertight else " · nicht geschlossen"))
-            symbol = vorschaubild(t, (PASST_TOENE if passt else ZU_GROSS_TOENE)[i % 2], passt)
+                                                + ("" if t.is_watertight else " · nicht geschlossen")
+                                                + (" · Zusammenbau prüfen" if i in sorgen else ""))
+            symbol = vorschaubild(t, self._toene(i, passt)[i % 2], passt)
             if symbol is not None:
                 eintrag.setIcon(symbol)
             self.teile_liste.addItem(eintrag)
@@ -1383,6 +1397,11 @@ class Fenster(QtWidgets.QMainWindow):
         self.teile_leer.setVisible(False)
         self._schritt(3)
         self._zeige_teile()
+
+    def _toene(self, i, passt):
+        if not passt:
+            return ZU_GROSS_TOENE
+        return MONTAGE_TOENE if any(k == i for k, _ in self.montage) else PASST_TOENE
 
     def _zeige_teile(self):
         """Alle Teile farbig und leicht auseinandergezogen zeigen."""
@@ -1405,7 +1424,7 @@ class Fenster(QtWidgets.QMainWindow):
             netz.translate(versatz, inplace=True)
             passt = kern.passt_irgendwie(t, self.ergebnis[2]["bauraum"])
             # Abwechselnd hell/dunkel, damit benachbarte Teile unterscheidbar bleiben
-            farben = PASST_TOENE if passt else ZU_GROSS_TOENE
+            farben = self._toene(i, passt)
             p.add_mesh(netz, color=farben[i % 2], **self._oberflaeche(), name=f"teil{i}")
             p.add_point_labels([t.bounds.mean(axis=0) + versatz], [f"{i + 1}"], font_size=14,
                                shape_opacity=0.6, always_visible=True, name=f"nummer{i}")
@@ -1624,7 +1643,7 @@ class Fenster(QtWidgets.QMainWindow):
     def _vor_dem_export(self):
         """Prüft alle Teile; bei Problemen erst nachfragen statt still zu speichern."""
         teile, _, e = self.ergebnis
-        probleme = kern.pruefe_teile(teile, e["bauraum"], self.lagen)
+        probleme = sorted(kern.pruefe_teile(teile, e["bauraum"], self.lagen) + list(self.montage))
         if not probleme:
             return True
         zeilen = [f"Teil {i + 1}: {text}" for i, text in probleme]
