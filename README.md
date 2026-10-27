@@ -53,14 +53,17 @@ Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
   abtrennen, während andere Äste in derselben Ebene ganz bleiben.
 - **Verbinder**: Dübel (Löcher in beiden Hälften, Dübel als eigene STL), angeformte Zapfen (an der
   größeren Hälfte, passendes Loch in der anderen) oder Löcher für Scheibenmagnete. Anzahl pro
-  Schnittfläche, Durchmesser, Tiefe/Länge/Magnethöhe und Spiel sind einstellbar. Die Verbinder werden
+  Schnittfläche, Durchmesser, Tiefe/Länge/Magnethöhe, Spiel und Randabstand sind einstellbar. Der
+  Randabstand (Standard 3 mm, mindestens 1,2 mm) ist die Wand zwischen Loch und Außenkante und zwischen
+  zwei Löchern. Die Verbinder werden
   automatisch verteilt: zwei Verbinder an den beiden Enden der Fläche, weitere in die Lücken, immer mit
   dem Randabstand zur Außenwand, mit Abstand zu Löchern früherer Schnitte und nur dort, wo das Loch über
   seine ganze Tiefe im Material bleibt (wichtig bei gekrümmten Formen). Passen nicht alle hinein,
   steht im Protokoll, wie viele es geworden sind.
 - **Dübel und Magnete gemischt**: Bei Dübeln und Zapfen lassen sich unter „Magnete zusätzlich“ weitere
   Magnete je Schnittfläche einstellen (eigener Durchmesser und eigene Höhe). Die Dübel richten aus und
-  sitzen möglichst weit auseinander, die Magnete halten und kommen in die Lücken dazwischen. In der
+  sitzen möglichst weit auseinander, die Magnete halten und kommen in die Lücken dazwischen. Jedes Loch
+  wird mit seiner eigenen Größe eingeplant, ein kleiner Magnet passt also auch in eine schmale Lücke. In der
   Vorschau sind Magnete lila. Beim Speichern steht im Protokoll, wie viele Magnete nötig sind.
 - **Verbinder selbst setzen** (manuell): Schnitt in der Liste wählen. Das Modell wird an der Ebene
   aufgeklappt, die Schnittfläche ist orange, die Verbinder als Kugeln (blau = automatisch, orange =

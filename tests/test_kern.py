@@ -296,3 +296,30 @@ def test_loecher_bleiben_im_material():
     m = kern.Montage()
     teile, n = kern.zerteile(stab, [kern.ebene_achse(0, 0.0)], kern.Duebel(2), montage=m)
     assert n == 2 and kern.montage_pruefen(teile, m) == []
+
+
+def test_randabstand_und_magnetgroesse():
+    from shapely.geometry import Point
+
+    def platz(durchmesser, **kw):
+        punkte, haupt = kern.duebel_positionen(Point(0, 0).buffer(durchmesser / 2, 64), kern.Duebel(2, **kw),
+                                               mit_anzahl=True)
+        return haupt, len(punkte) - haupt
+    assert platz(20) == (1, 0)
+    assert platz(20, randabstand=2.0) == (2, 0)
+    # Ein kleiner Magnet passt dort noch zwischen die Dübel, wo ein 6-mm-Magnet keinen Platz hat
+    assert platz(22, magnete=1, magnet_durchmesser=6.0) == (2, 0)
+    assert platz(22, magnete=1, magnet_durchmesser=3.0) == (2, 1)
+    # Passt nur ein Dübel, bleibt der Magnet trotzdem ein Magnet
+    assert platz(20, magnete=1, magnet_durchmesser=3.0) == (1, 1)
+
+
+def test_magnet_bleibt_magnet_wenn_duebel_fehlen():
+    stab = trimesh.creation.cylinder(radius=10, height=200, sections=64)
+    d = kern.Duebel(2, magnete=1, magnet_durchmesser=3.0)
+    zeilen = []
+    m = kern.Montage()
+    teile, n = kern.zerteile(stab, [kern.ebene_achse(2, 0.0)], d, log=zeilen.append, montage=m)
+    assert (n, m.magnete) == (1, 1)
+    assert any("Nur Platz für 1 von 2 Dübeln und 1 von 1 Magneten" in z for z in zeilen)
+    assert kern.montage_pruefen(teile, m) == []

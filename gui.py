@@ -380,6 +380,9 @@ class Fenster(QtWidgets.QMainWindow):
         self.d_tiefe_label = QtWidgets.QLabel("Tiefe je Seite mm")
         form.addRow(self.d_tiefe_label, self.d_tiefe)
         form.addRow("Spiel mm", self.d_spiel)
+        self.d_rand = self._zahl(3.0, kern.MIN_WAND, 10, 1, schritt=0.5)
+        self.d_rand.setToolTip("Mindestwand zwischen Loch und Außenkante und zwischen zwei Löchern")
+        form.addRow("Randabstand mm", self.d_rand)
         self.d_drucken = QtWidgets.QCheckBox("Dübel mitdrucken")
         self.d_drucken.setChecked(True)
         form.addRow(self.d_drucken)
@@ -397,7 +400,7 @@ class Fenster(QtWidgets.QMainWindow):
             self.magnet_zeilen += [beschriftung, feld]
         for feld in (self.m_anzahl, self.m_durchmesser):
             feld.valueChanged.connect(lambda *_: self._zeichne_schnitte(True))
-        for feld in (self.d_anzahl, self.d_durchmesser, self.d_spiel):
+        for feld in (self.d_anzahl, self.d_durchmesser, self.d_spiel, self.d_rand):
             feld.valueChanged.connect(lambda *_: self._zeichne_schnitte(True))
         self._art_werte = {}  # merkt sich Maße je Art beim Umschalten
         self._art_alt = "duebel"
@@ -941,8 +944,9 @@ class Fenster(QtWidgets.QMainWindow):
                                   name=f"inselrand{k}", pickable=False)
             d = e["duebel"]
             for j, p in enumerate(insel.verbinder):
-                magnet = d is not None and d.ist_magnet(j)
-                kugel = pv.Sphere(radius=d.platz_durchmesser(j) / 2 if d else 3, center=p)
+                magnet = d is not None and insel.ist_magnet(j, d)
+                groesse = (d.magnet_durchmesser if magnet else d.durchmesser) if d else 6.0
+                kugel = pv.Sphere(radius=groesse / 2, center=p)
                 farbe = MAGNETFARBE if magnet else ("#e8590c" if insel.manuell else "#1971c2")
                 self.ansicht.add_mesh(kugel, color=farbe, name=f"verbinder{k}_{j}", pickable=False)
 
@@ -1338,6 +1342,7 @@ class Fenster(QtWidgets.QMainWindow):
             duebel = kern.Duebel(self.d_anzahl.value(), self.d_durchmesser.value(), self.d_tiefe.value(),
                                  self.d_spiel.value(), drucken=self.d_drucken.isChecked(),
                                  art=self.d_art.currentData(), magnete=self.m_anzahl.value(),
+                                 randabstand=self.d_rand.value(),
                                  magnet_durchmesser=self.m_durchmesser.value(), magnet_hoehe=self.m_hoehe.value())
         schnitte = [(s["punkt"], s["normale"], s["fenster"], s["punkte"] or None) for s in self.schnitte]
         return dict(auto=self.auto.isChecked(), schnitte=schnitte,
