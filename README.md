@@ -1,4 +1,4 @@
-# STL-Schneider
+# KOLBCRAFT Cutter
 
 Zerteilt STL-Dateien für den 3D-Druck, damit jedes Teil auf die Druckplatte passt, und bohrt
 Löcher für gedruckte Dübel in die Schnittflächen. Voreingestellt ist der Bambu Lab H2D.
@@ -21,8 +21,12 @@ Repository privat ist. Danach `start.bat` starten, neue Pakete werden automatisc
 Links führen fünf Reiter durch die Arbeit: **1 Modell → 2 Schneiden → 3 Verbinder → 4 Teile → 5 Ausgabe**.
 Nach „Teile berechnen“ springt das Programm selbst zu „Teile“. Über der 3D-Ansicht liegt eine
 Werkzeugleiste mit festen Ansichten (Iso, Vorn, Seite, Oben, Einpassen), Rückgängig/Wiederholen,
-„Stützen“ ein/aus und dem Umschalter für helles oder dunkles Design (wird gemerkt). Unten zeigt eine
+„Stützen“ ein/aus und dem Zahnrad ⚙ für die Einstellungen. Unten zeigt eine
 Statuszeile die letzte Meldung, „Protokoll“ klappt alle Meldungen auf (bei Fehlern automatisch).
+
+**Einstellungen (⚙ oben rechts)**: Design hell/dunkel, Glanz auf den Oberflächen, Raster auf der
+Druckplatte (Abstand wählbar), 3D-Maus an/aus mit Empfindlichkeit und „Richtungen umkehren“ sowie der
+Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
 
 - **Modell öffnen**: STL, 3MF oder OBJ, per „Öffnen …“, „Zuletzt ▾“ (die letzten 8 Dateien) oder
   einfach die Datei ins Fenster ziehen. Das Modell erscheint in der 3D-Ansicht auf einer Druckplatte mit
@@ -74,7 +78,7 @@ Statuszeile die letzte Meldung, „Protokoll“ klappt alle Meldungen auf (bei F
 - **In Bambu Studio öffnen** speichert die Teile in den Ordner `<Modell>_teile` neben dem Modell und
   öffnet die 3MF sofort in Bambu Studio. Dort am besten noch „Anordnen“ (Taste A) drücken, damit Bambu
   Studio die Teile auf die Platten verteilt. Bambu Studio wird automatisch gesucht (Installationseintrag,
-  „C:\Programme\Bambu Studio“). Liegt es woanders, unter „Ausgabe“ mit „Wählen …“ die
+  „C:\Programme\Bambu Studio“). Liegt es woanders, in den Einstellungen (⚙) mit „Wählen …“ die
   `bambu-studio.exe` angeben, der Pfad wird gemerkt.
 
 ## Kommandozeile

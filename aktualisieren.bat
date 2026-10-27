@@ -1,5 +1,5 @@
 @echo off
-rem Holt die neueste Version des STL-Schneiders von GitHub.
+rem Holt die neueste Version des KOLBCRAFT Cutters von GitHub.
 rem Beim ersten Mal fragt Git nach deiner GitHub-Anmeldung (das Repository ist privat).
 setlocal
 set ZWEIG=main

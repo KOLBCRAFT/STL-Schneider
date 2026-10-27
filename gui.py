@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fenster-Programm für den STL-Schneider mit 3D-Ansicht."""
+"""KOLBCRAFT Cutter: Fenster-Programm mit 3D-Ansicht."""
 import os
 import sys
 import threading
@@ -99,7 +99,7 @@ class Signale(QtCore.QObject):
 class Fenster(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("STL-Schneider")
+        self.setWindowTitle("KOLBCRAFT Cutter")
         self.resize(1400, 900)
 
         self.mesh = None          # trimesh des geladenen Modells
@@ -379,24 +379,6 @@ class Fenster(QtWidgets.QMainWindow):
         self._art_alt = "duebel"
         self._art_gewaehlt()
 
-        # Ansicht
-        spalte = spalten[0]
-        gruppe, form = self._gruppe(spalte, "Ansicht")
-        hilfe = QtWidgets.QLabel("Linke Maustaste drehen, Mausrad zoomen, mittlere Taste "
-                                 "(oder Umschalt + links) verschieben.")
-        hilfe.setWordWrap(True)
-        form.addRow(hilfe)
-        self.maus3d = QtWidgets.QCheckBox("3D-Maus verwenden")
-        self.maus3d.toggled.connect(self._maus3d_umschalten)
-        form.addRow(self.maus3d)
-        self.maus3d_tempo = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.maus3d_tempo.setRange(1, 20)
-        self.maus3d_tempo.setValue(8)
-        form.addRow("Empfindlichkeit", self.maus3d_tempo)
-        self.spacemouse = None
-        self.maus3d_takt = QtCore.QTimer(self)
-        self.maus3d_takt.timeout.connect(self._maus3d_schritt)
-
         # Teile im Bauraum testen
         spalte = spalten[3]
         self.teile_leer = QtWidgets.QLabel("Noch keine Teile. Erst unten auf „Teile berechnen“ klicken.")
@@ -471,15 +453,6 @@ class Fenster(QtWidgets.QMainWindow):
         self.drehen.setChecked(True)
         form.addRow(self.dreimf)
         form.addRow(self.drehen)
-        zeile = QtWidgets.QHBoxLayout()
-        self.bambu_info = QtWidgets.QLabel("")
-        self.bambu_info.setWordWrap(True)
-        knopf = QtWidgets.QPushButton("Wählen …")
-        knopf.setToolTip("Pfad zu bambu-studio.exe selbst festlegen")
-        knopf.clicked.connect(self._bambu_waehlen)
-        zeile.addWidget(self.bambu_info, 1)
-        zeile.addWidget(knopf)
-        form.addRow(zeile)
 
         self.k_berechnen = QtWidgets.QPushButton("Teile berechnen")
         self.k_berechnen.clicked.connect(self._berechnen)
@@ -503,13 +476,118 @@ class Fenster(QtWidgets.QMainWindow):
             k.setMinimumHeight(40)
         for spalte in spalten:
             spalte.addStretch(1)
+        self._baue_einstellungen()
         self._baue_werkzeuge()
 
         self._modus_gewaehlt()
         self._bambu_anzeigen()
         self._design(self.einstellungen.get("design", "dunkel"))
         self._knoepfe()
-        QtCore.QTimer.singleShot(0, lambda: self.maus3d.setChecked(True))
+        QtCore.QTimer.singleShot(0, lambda: self.maus3d.setChecked(self.einstellungen.get("maus3d", True)))
+
+    def _baue_einstellungen(self):
+        """Fenster hinter dem Zahnrad: Dinge, die man einmal einstellt und dann vergisst."""
+        e = self.einstellungen
+        d = QtWidgets.QDialog(self)
+        d.setWindowTitle("Einstellungen")
+        d.setMinimumWidth(460)
+        self.einstellungs_fenster = d
+        spalte = QtWidgets.QVBoxLayout(d)
+
+        gruppe, form = self._gruppe(spalte, "Darstellung")
+        self.design_wahl = QtWidgets.QComboBox()
+        self.design_wahl.addItem("Dunkel", "dunkel")
+        self.design_wahl.addItem("Hell", "hell")
+        self.design_wahl.currentIndexChanged.connect(
+            lambda _: self._design(self.design_wahl.currentData(), merken=True))
+        form.addRow("Design", self.design_wahl)
+        self.glanz = QtWidgets.QCheckBox("Glanz auf den Oberflächen (Rillen und Kanten besser sichtbar)")
+        self.glanz.setChecked(e.get("glanz", True))
+        form.addRow(self.glanz)
+        zeile = QtWidgets.QHBoxLayout()
+        self.raster_an = QtWidgets.QCheckBox("Raster auf der Druckplatte, alle")
+        self.raster_an.setChecked(e.get("raster", True))
+        self.raster_abstand = self._zahl(e.get("raster_abstand", 25), 5, 100, 0, 5)
+        self.raster_abstand.setSuffix(" mm")
+        zeile.addWidget(self.raster_an)
+        zeile.addWidget(self.raster_abstand)
+        zeile.addStretch(1)
+        form.addRow(zeile)
+
+        gruppe, form = self._gruppe(spalte, "Maus und 3D-Maus")
+        hilfe = QtWidgets.QLabel("Linke Maustaste drehen, Mausrad zoomen, mittlere Taste "
+                                 "(oder Umschalt + links) verschieben.")
+        hilfe.setWordWrap(True)
+        hilfe.setProperty("rolle", "hinweis")
+        form.addRow(hilfe)
+        self.maus3d = QtWidgets.QCheckBox("3D-Maus verwenden")
+        self.maus3d.toggled.connect(self._maus3d_umschalten)
+        form.addRow(self.maus3d)
+        self.maus3d_tempo = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.maus3d_tempo.setRange(1, 20)
+        self.maus3d_tempo.setValue(e.get("maus3d_tempo", 8))
+        form.addRow("Empfindlichkeit", self.maus3d_tempo)
+        self.maus3d_umkehren = QtWidgets.QCheckBox("Richtungen umkehren")
+        self.maus3d_umkehren.setToolTip("Falls sich die Ansicht genau andersherum bewegt als erwartet")
+        self.maus3d_umkehren.setChecked(e.get("maus3d_umkehren", False))
+        form.addRow(self.maus3d_umkehren)
+        self.spacemouse = None
+        self.maus3d_takt = QtCore.QTimer(self)
+        self.maus3d_takt.timeout.connect(self._maus3d_schritt)
+
+        gruppe, form = self._gruppe(spalte, "Bambu Studio")
+        zeile = QtWidgets.QHBoxLayout()
+        self.bambu_info = QtWidgets.QLabel("")
+        self.bambu_info.setWordWrap(True)
+        knopf = QtWidgets.QPushButton("Wählen …")
+        knopf.setToolTip("Pfad zu bambu-studio.exe selbst festlegen")
+        knopf.clicked.connect(self._bambu_waehlen)
+        zeile.addWidget(self.bambu_info, 1)
+        zeile.addWidget(knopf)
+        form.addRow(zeile)
+
+        ort = QtWidgets.QLabel(f"Gespeichert in {profile.pfad()}")
+        ort.setWordWrap(True)
+        ort.setProperty("rolle", "hinweis")
+        spalte.addWidget(ort)
+        zeile = QtWidgets.QHBoxLayout()
+        zeile.addStretch(1)
+        knopf = QtWidgets.QPushButton("Schließen")
+        knopf.clicked.connect(d.close)
+        zeile.addWidget(knopf)
+        spalte.addLayout(zeile)
+
+        # Jede Änderung sofort übernehmen und merken
+        def merken(schluessel, wert, neu_zeichnen=False):
+            self.einstellungen[schluessel] = wert
+            profile.speichere(self.einstellungen)
+            if neu_zeichnen:
+                self._neu_zeichnen()
+
+        self.glanz.toggled.connect(lambda an: merken("glanz", an, True))
+        self.raster_an.toggled.connect(lambda an: merken("raster", an, True))
+        self.raster_abstand.valueChanged.connect(lambda w: merken("raster_abstand", w, True))
+        self.maus3d.toggled.connect(lambda an: merken("maus3d", an))
+        self.maus3d_tempo.valueChanged.connect(lambda w: merken("maus3d_tempo", w))
+        self.maus3d_umkehren.toggled.connect(lambda an: merken("maus3d_umkehren", an))
+
+    def _einstellungen_zeigen(self):
+        self.einstellungs_fenster.show()
+        self.einstellungs_fenster.raise_()
+        self.einstellungs_fenster.activateWindow()
+
+    def _oberflaeche(self):
+        if self.glanz.isChecked():
+            return OBERFLAECHE
+        return dict(smooth_shading=True)
+
+    def _neu_zeichnen(self):
+        if self.mesh is not None and self.ergebnis is None:
+            self._zeige_modell()
+        elif getattr(self, "im_bauraum", False):
+            self._in_bauraum()
+        elif self.ergebnis is not None:
+            self._zeige_teile()
 
     def _baue_werkzeuge(self):
         w = self.werkzeuge
@@ -539,8 +617,10 @@ class Fenster(QtWidgets.QMainWindow):
         abstand = QtWidgets.QWidget()
         abstand.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         w.addWidget(abstand)
-        self.a_design = aktion("☾ Dunkel", "Zwischen hellem und dunklem Design wechseln",
-                               lambda an: self._design("dunkel" if an else "hell", merken=True), umschalter=True)
+        self.a_einstellungen = aktion("⚙", "Einstellungen: Design, 3D-Maus, Bambu Studio, Darstellung",
+                                      self._einstellungen_zeigen)
+        knopf = w.widgetForAction(self.a_einstellungen)
+        knopf.setStyleSheet("font-size: 15pt; padding: 0 8px;")
 
     def _leeren(self):
         """Szene leeren. clear() entfernt auch die Lampen, ohne sie wirkt alles flach wie ein Scherenschnitt."""
@@ -560,19 +640,14 @@ class Fenster(QtWidgets.QMainWindow):
         design.anwenden(app, name)
         oben, unten = design.hintergrund_3d(name)
         self.ansicht.set_background(unten, top=oben)
-        self.a_design.blockSignals(True)
-        self.a_design.setChecked(name == "dunkel")
-        self.a_design.setText("☾ Dunkel" if name == "dunkel" else "☀ Hell")
-        self.a_design.blockSignals(False)
+        self.design_wahl.blockSignals(True)
+        self.design_wahl.setCurrentIndex(self.design_wahl.findData(name))
+        self.design_wahl.blockSignals(False)
         self.design_name = name
         if merken:
             self.einstellungen["design"] = name
             profile.speichere(self.einstellungen)
-            # Druckplatte in den neuen Farben zeichnen
-            if self.mesh is not None and self.ergebnis is None:
-                self._zeige_modell()
-            elif getattr(self, "im_bauraum", False):
-                self._in_bauraum()
+            self._neu_zeichnen()  # Druckplatte in den neuen Farben
 
     def _schritt(self, nr):
         self.schritt_knoepfe.button(nr).setChecked(True)
@@ -748,7 +823,7 @@ class Fenster(QtWidgets.QMainWindow):
         p.clear_plane_widgets()
         self.ebene_widget = None
         self._leeren()
-        p.add_mesh(self.modell_pv, color=MODELLFARBE, **OBERFLAECHE, name="modell")
+        p.add_mesh(self.modell_pv, color=MODELLFARBE, **self._oberflaeche(), name="modell")
         self._zeichne_bauraum()
         self._zeichne_schnitte()
         if self.manuell.isChecked():
@@ -770,8 +845,9 @@ class Fenster(QtWidgets.QMainWindow):
         farbe, linien = design.platte(getattr(self, "design_name", "dunkel"))
         platte = pv.Plane(center=(x0 + breite / 2, y0 + tiefe / 2, z - 0.5), i_size=breite, j_size=tiefe)
         self.ansicht.add_mesh(platte, color=farbe, opacity=0.9, name="platte", pickable=False)
-        self.ansicht.add_mesh(raster(x0, y0, z - 0.4, breite, tiefe), color=linien, line_width=1,
-                              name="raster", pickable=False)
+        if self.raster_an.isChecked():
+            self.ansicht.add_mesh(raster(x0, y0, z - 0.4, breite, tiefe, self.raster_abstand.value()),
+                                  color=linien, line_width=1, name="raster", pickable=False)
 
     def _zeichne_schnitte(self, neu_rendern=False):
         if self.mesh is None or self.ergebnis is not None:
@@ -799,10 +875,10 @@ class Fenster(QtWidgets.QMainWindow):
             if getattr(self, "_halb_schluessel", None) != schluessel:
                 self._halb = self.modell_pv.clip(normal=s["normale"], origin=s["punkt"], invert=hinten)
                 self._halb_schluessel = schluessel
-            self.ansicht.add_mesh(self._halb, color=MODELLFARBE, **OBERFLAECHE, name="modell", pickable=False)
+            self.ansicht.add_mesh(self._halb, color=MODELLFARBE, **self._oberflaeche(), name="modell", pickable=False)
             self._zeichne_verbinder(s)
         else:
-            self.ansicht.add_mesh(self.modell_pv, color=MODELLFARBE, **OBERFLAECHE, name="modell",
+            self.ansicht.add_mesh(self.modell_pv, color=MODELLFARBE, **self._oberflaeche(), name="modell",
                                   pickable=False)
         if neu_rendern:
             self.ansicht.render()
@@ -1092,6 +1168,8 @@ class Fenster(QtWidgets.QMainWindow):
         werte[np.abs(werte) < 0.05] = 0  # kleine Ausschläge ignorieren
         if not werte.any():
             return
+        if self.maus3d_umkehren.isChecked():
+            werte = -werte
         tx, ty, tz, rx, ry, rz = werte
         tempo = self.maus3d_tempo.value() / 8
         kamera = self.ansicht.renderer.GetActiveCamera()
@@ -1221,7 +1299,7 @@ class Fenster(QtWidgets.QMainWindow):
             return
         e = self._einstellungen()
         if not e["auto"] and not e["schnitte"]:
-            QtWidgets.QMessageBox.information(self, "STL-Schneider",
+            QtWidgets.QMessageBox.information(self, "KOLBCRAFT Cutter",
                                               "Bitte mindestens einen Schnitt hinzufügen.")
             return
         self.k_berechnen.setEnabled(False)
@@ -1296,7 +1374,7 @@ class Fenster(QtWidgets.QMainWindow):
             passt = kern.passt_irgendwie(t, self.ergebnis[2]["bauraum"])
             # Abwechselnd hell/dunkel, damit benachbarte Teile unterscheidbar bleiben
             farben = PASST_TOENE if passt else ZU_GROSS_TOENE
-            p.add_mesh(netz, color=farben[i % 2], **OBERFLAECHE, name=f"teil{i}")
+            p.add_mesh(netz, color=farben[i % 2], **self._oberflaeche(), name=f"teil{i}")
             p.add_point_labels([t.bounds.mean(axis=0) + versatz], [f"{i + 1}"], font_size=14,
                                shape_opacity=0.6, always_visible=True, name=f"nummer{i}")
         p.add_axes()
@@ -1343,7 +1421,7 @@ class Fenster(QtWidgets.QMainWindow):
         p.add_mesh(box, style="wireframe", color="#2b8a3e", line_width=2, name="bauraum", pickable=False)
         self._druckplatte(0, 0, 0, b[0], b[1])
         self.teil_akteur = p.add_mesh(zu_pyvista(teil), color=PASST_FARBE,
-                                      **OBERFLAECHE, name="teil_im_bauraum")
+                                      **self._oberflaeche(), name="teil_im_bauraum")
         self.teil_akteur.user_matrix = self.lagen[i]
         pts = trimesh.transform_points(self.huellen[i], self.lagen[i])
         self.teil_widget = p.add_affine_transform_widget(
