@@ -694,7 +694,7 @@ class Fenster(QtWidgets.QMainWindow):
     @staticmethod
     def _modell_aus(mime):
         for url in mime.urls() if mime.hasUrls() else []:
-            pfad = url.toLocalFile()
+            pfad = str(Path(url.toLocalFile()))  # Windows: Backslashes wie im Dateidialog
             if Path(pfad).suffix.lower() in (".stl", ".3mf", ".obj"):
                 return pfad
         return None
