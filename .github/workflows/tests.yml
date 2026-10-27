@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Kern-Tests
+        run: python -m pytest -q tests/test_kern.py
+      - name: Oberflächen-Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q tests/test_gui.py
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Alle Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -m pytest -q

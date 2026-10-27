@@ -332,6 +332,9 @@ def passt_irgendwie(teil, bauraum, rand=0.0):
     return all(a <= b - 2 * rand for a, b in zip(sorted(teil.extents), sorted(bauraum)))
 
 
+MAX_SCHNITTE = 500  # Notbremse für die Automatik, normale Modelle brauchen weit weniger
+
+
 def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None):
     """Schneidet nur Teile, die nicht passen, und legt jeden Schnitt an die dünnste Stelle.
 
@@ -339,17 +342,24 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None):
     z.B. durch schmale Äste statt durch dicke Stellen gehen.
     """
     offen, fertig = [mesh], []
-    zaehler = 0
+    zaehler = schnitte = 0
+    zapfen = duebel.tiefe if duebel and duebel.art == "zapfen" and duebel.anzahl > 0 else 0.0
+    if min(bauraum) - 2 * rand - zapfen <= 1.0:
+        raise ValueError(f"Bauraum {min(bauraum):g} mm ist zu klein für {rand:g} mm Rand"
+                         + (f" und {zapfen:g} mm Zapfen" if zapfen else ""))
     while offen:
         t = offen.pop()
         if passt_irgendwie(t, bauraum, rand):
             fertig.append(t)
             continue
+        schnitte += 1
+        if schnitte > MAX_SCHNITTE:
+            raise RuntimeError(f"Automatik nach {MAX_SCHNITTE} Schnitten abgebrochen, das Modell zerfällt in zu viele "
+                               "Stücke. Bitte Modell prüfen (z.B. viele lose Einzelteile) oder manuell schneiden.")
         # Teil-Achsen der Größe nach den Bauraum-Achsen zuordnen (Teile dürfen gedreht werden)
         # und die Achse schneiden, die am weitesten übersteht
         reihenfolge = np.argsort(t.extents)
         # Angeformte Zapfen machen ein Teil länger, dafür Platz lassen
-        zapfen = duebel.tiefe if duebel and duebel.art == "zapfen" and duebel.anzahl > 0 else 0.0
         platz = np.array(sorted(bauraum), dtype=float) - 2 * rand - zapfen
         k = int(np.argmax(t.extents[reihenfolge] / platz))
         achse, nutzbar = int(reihenfolge[k]), platz[k]
@@ -574,6 +584,67 @@ def beste_lage(teil, bauraum, winkel=45.0, log=None):
         log(f"Beste Lage: Stützfläche ca. {k['stuetzflaeche'] / 100:.0f} cm², Höhe {k['hoehe']:.0f} mm, "
             f"Auflage {k['auflage'] / 100:.1f} cm²")
     return m, k
+
+
+def modell_pruefen(mesh):
+    """Hinweise zu typischen Fehlern in Scans und Downloads, leer wenn alles in Ordnung ist."""
+    hinweise = []
+    if not mesh.is_watertight:
+        offen = len(trimesh.grouping.group_rows(mesh.edges_sorted, require_count=1))
+        hinweise.append(f"nicht geschlossen ({offen} offene Kanten)")
+    if not mesh.is_winding_consistent:
+        hinweise.append("Dreiecke uneinheitlich ausgerichtet")
+    elif mesh.is_watertight and mesh.volume < 0:
+        hinweise.append("Innen und außen vertauscht")
+    entartet = int((mesh.area_faces < 1e-10).sum())
+    if entartet:
+        hinweise.append(f"{entartet} entartete Dreiecke ohne Fläche")
+    teile = mesh.body_count
+    if teile > 1:
+        hinweise.append(f"besteht aus {teile} losen Teilen")
+    return hinweise
+
+
+def repariere(mesh, log=print):
+    """Schließt kleine Löcher, vereinheitlicht die Ausrichtung und entfernt entartete Dreiecke.
+    Gibt ein neues Netz zurück, das Original bleibt unverändert."""
+    m = mesh.copy()
+    m.merge_vertices()
+    m.update_faces(m.nondegenerate_faces())
+    m.update_faces(m.unique_faces())
+    m.remove_unreferenced_vertices()
+    trimesh.repair.fix_normals(m)
+    trimesh.repair.fill_holes(m)
+    vorher, nachher = modell_pruefen(mesh), modell_pruefen(m)
+    log("Reparatur: " + ("; ".join(vorher) or "nichts zu tun") + " → " + ("; ".join(nachher) or "in Ordnung"))
+    return m
+
+
+def pruefe_teile(teile, bauraum, lagen=None):
+    """Probleme je Teil vor dem Export: [(index, text)]. lagen wie bei exportiere()."""
+    lagen = lagen or {}
+    probleme = []
+    for i, t in enumerate(teile):
+        if i in lagen:
+            t = t.copy()
+            t.apply_transform(lagen[i])
+            ok = passt(t, bauraum)
+        else:
+            ok = passt_irgendwie(t, bauraum)
+        if not ok:
+            probleme.append((i, "passt nicht in den Bauraum"))
+        if not t.is_watertight:
+            probleme.append((i, "nicht geschlossen (Slicer repariert das meist, bitte prüfen)"))
+        elif t.volume <= 0:
+            probleme.append((i, "Innen und außen vertauscht"))
+    return probleme
+
+
+def volumen_bilanz(original, teile):
+    """(Volumen Original, Summe der Teile) in mm³, None wenn das Original nicht geschlossen ist."""
+    if not original.is_watertight:
+        return None
+    return float(original.volume), float(sum(abs(t.volume) for t in teile))
 
 
 def passt(teil, bauraum):

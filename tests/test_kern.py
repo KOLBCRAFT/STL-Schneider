@@ -168,3 +168,37 @@ def test_skalieren(zylinder):
     assert gross.extents[0] == pytest.approx(zylinder.extents[0] * faktor)
     assert gross.bounds[0] == pytest.approx(zylinder.bounds[0])  # untere Ecke bleibt
     assert zylinder.extents[2] != pytest.approx(1000)  # Original unverändert
+
+
+def test_modell_pruefen_und_reparieren(zylinder):
+    assert kern.modell_pruefen(zylinder) == []
+    loch = zylinder.copy()
+    loch.update_faces(np.arange(1, len(loch.faces)))  # ein Dreieck fehlt
+    hinweise = kern.modell_pruefen(loch)
+    assert hinweise and "nicht geschlossen" in hinweise[0]
+    meldungen = []
+    heil = kern.repariere(loch, log=meldungen.append)
+    assert heil.is_watertight and kern.modell_pruefen(heil) == []
+    assert not loch.is_watertight  # Original unverändert
+    assert "in Ordnung" in meldungen[0]
+
+
+def test_pruefe_teile_und_bilanz(zylinder):
+    teile, _ = kern.zerteile(zylinder, [kern.ebene_achse(2, 0.0)])
+    assert kern.pruefe_teile(teile, H2D) == []
+    assert kern.pruefe_teile(teile, (100, 100, 100)) == [(0, "passt nicht in den Bauraum"),
+                                                         (1, "passt nicht in den Bauraum")]
+    vorher, nachher = kern.volumen_bilanz(zylinder, teile)
+    assert nachher == pytest.approx(vorher, rel=1e-3)
+
+
+def test_automatik_bricht_sauber_ab(zylinder):
+    with pytest.raises(ValueError, match="zu klein"):
+        kern.auto_zerteile(zylinder, (5, 5, 5), rand=3.0)
+    alt = kern.MAX_SCHNITTE
+    kern.MAX_SCHNITTE = 2
+    try:
+        with pytest.raises(RuntimeError, match="abgebrochen"):
+            kern.auto_zerteile(zylinder, (30, 30, 30), rand=1.0)
+    finally:
+        kern.MAX_SCHNITTE = alt
