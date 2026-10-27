@@ -24,6 +24,7 @@ ZU_GROSS_TOENE = (ZU_GROSS_FARBE, "#c92a2a")
 MONTAGE_TOENE = ("#fd7e14", "#d9480f")  # Orange: passt, aber Problem beim Zusammenbau
 MODELLFARBE = "#adb5bd"
 SCHNITTFARBE = "#d9480f"
+MAGNETFARBE = "#ae3ec9"
 # Leichter Glanz, damit Rillen und Kanten der Oberfläche plastisch wirken
 OBERFLAECHE = dict(smooth_shading=True, specular=0.4, specular_power=20)
 SCHRITTE = ("Modell", "Schneiden", "Verbinder", "Teile", "Ausgabe")
@@ -114,6 +115,7 @@ class Fenster(QtWidgets.QMainWindow):
         self.teil_widget = None
         self.ergebnis = None      # (teile, anzahl_dübel, einstellungen) nach "Teile berechnen"
         self.montage = []         # [(teil_index, text)] aus kern.montage_pruefen
+        self.magnete = 0          # zusätzliche Magnete (Paare) der letzten Berechnung
 
         self.signale = Signale()
         self.signale.log.connect(self._log)
@@ -381,6 +383,20 @@ class Fenster(QtWidgets.QMainWindow):
         self.d_drucken = QtWidgets.QCheckBox("Dübel mitdrucken")
         self.d_drucken.setChecked(True)
         form.addRow(self.d_drucken)
+        # Zusätzliche Magnete neben Dübeln oder Zapfen (z.B. Dübel richten aus, Magnete halten)
+        self.m_anzahl = QtWidgets.QSpinBox()
+        self.m_anzahl.setRange(0, 8)
+        self.m_anzahl.setToolTip("Magnete kommen in die Lücken zwischen den Dübeln, in beide Hälften")
+        self.m_durchmesser = self._zahl(6.0, 2, 30, 1)
+        self.m_hoehe = self._zahl(3.0, 1, 20, 1)
+        self.magnet_zeilen = []
+        for text, feld in (("Magnete zusätzlich", self.m_anzahl), ("Magnet Ø mm", self.m_durchmesser),
+                           ("Magnethöhe mm", self.m_hoehe)):
+            beschriftung = QtWidgets.QLabel(text)
+            form.addRow(beschriftung, feld)
+            self.magnet_zeilen += [beschriftung, feld]
+        for feld in (self.m_anzahl, self.m_durchmesser):
+            feld.valueChanged.connect(lambda *_: self._zeichne_schnitte(True))
         for feld in (self.d_anzahl, self.d_durchmesser, self.d_spiel):
             feld.valueChanged.connect(lambda *_: self._zeichne_schnitte(True))
         self._art_werte = {}  # merkt sich Maße je Art beim Umschalten
@@ -923,11 +939,12 @@ class Fenster(QtWidgets.QMainWindow):
             linie = pv.lines_from_points(np.vstack([insel.rand, insel.rand[:1]]))
             self.ansicht.add_mesh(linie, color=SCHNITTFARBE if insel.gewaehlt else "#868e96", line_width=3,
                                   name=f"inselrand{k}", pickable=False)
-            r = (e["duebel"].durchmesser / 2) if e["duebel"] else 3
+            d = e["duebel"]
             for j, p in enumerate(insel.verbinder):
-                kugel = pv.Sphere(radius=r, center=p)
-                self.ansicht.add_mesh(kugel, color="#e8590c" if insel.manuell else "#1971c2",
-                                      name=f"verbinder{k}_{j}", pickable=False)
+                magnet = d is not None and d.ist_magnet(j)
+                kugel = pv.Sphere(radius=d.platz_durchmesser(j) / 2 if d else 3, center=p)
+                farbe = MAGNETFARBE if magnet else ("#e8590c" if insel.manuell else "#1971c2")
+                self.ansicht.add_mesh(kugel, color=farbe, name=f"verbinder{k}_{j}", pickable=False)
 
     def _rechts_gedrueckt(self, *_):
         self._rechts_druck = self.ansicht.iren.interactor.GetEventPosition()
@@ -1312,13 +1329,16 @@ class Fenster(QtWidgets.QMainWindow):
         self.d_tiefe_label.setText(label)
         self.d_art_info.setText(info)
         self.d_drucken.setVisible(art == "duebel")
+        for w in self.magnet_zeilen:
+            w.setVisible(art != "magnet")
 
     def _einstellungen(self):
         duebel = None
         if self.d_anzahl.value() > 0:
             duebel = kern.Duebel(self.d_anzahl.value(), self.d_durchmesser.value(), self.d_tiefe.value(),
                                  self.d_spiel.value(), drucken=self.d_drucken.isChecked(),
-                                 art=self.d_art.currentData())
+                                 art=self.d_art.currentData(), magnete=self.m_anzahl.value(),
+                                 magnet_durchmesser=self.m_durchmesser.value(), magnet_hoehe=self.m_hoehe.value())
         schnitte = [(s["punkt"], s["normale"], s["fenster"], s["punkte"] or None) for s in self.schnitte]
         return dict(auto=self.auto.isChecked(), schnitte=schnitte,
                     bauraum=[f.value() for f in self.bauraum], duebel=duebel)
@@ -1344,7 +1364,7 @@ class Fenster(QtWidgets.QMainWindow):
             else:
                 teile, n = kern.zerteile(self.mesh, e["schnitte"], e["duebel"], log=log, montage=montage)
             log("Prüfe den Zusammenbau ...")
-            self.signale.fertig.emit((teile, n, e, kern.montage_pruefen(teile, montage)))
+            self.signale.fertig.emit((teile, n, e, kern.montage_pruefen(teile, montage), montage.magnete))
         except Exception as fehler:
             self.signale.fehler.emit(str(fehler))
 
@@ -1357,12 +1377,14 @@ class Fenster(QtWidgets.QMainWindow):
 
     def _berechnet(self, ergebnis):
         self.k_berechnen.setText("Teile berechnen")
-        teile, n, e, *montage = ergebnis
+        teile, n, e, *rest = ergebnis
         self.ergebnis = (teile, n, e)
-        self.montage = montage[0] if montage else []
+        self.montage = rest[0] if rest else []
+        self.magnete = rest[1] if len(rest) > 1 else 0
         self._knoepfe()
         passt = sum(kern.passt_irgendwie(t, e["bauraum"]) for t in teile)
-        self._log(f"{len(teile)} Teile, {n} Verbinder. {passt} von {len(teile)} passen auf die Platte. "
+        magnete = f" und {self.magnete} Magnete" if self.magnete else ""
+        self._log(f"{len(teile)} Teile, {n} Verbinder{magnete}. {passt} von {len(teile)} passen auf die Platte. "
                   "Mit „Speichern …“ ausgeben oder direkt „In Bambu Studio öffnen“.")
         bilanz = kern.volumen_bilanz(self.mesh, teile)
         if bilanz:
@@ -1626,7 +1648,8 @@ class Fenster(QtWidgets.QMainWindow):
         try:
             datei = kern.exportiere(teile, self.pfad.stem, ziel, e["bauraum"], drehen=self.drehen.isChecked(),
                                     dreimf=self.dreimf.isChecked() if dreimf is None else dreimf,
-                                    duebel=e["duebel"], anzahl_duebel=n, log=self._log, lagen=self.lagen)
+                                    duebel=e["duebel"], anzahl_duebel=n, log=self._log, lagen=self.lagen,
+                                    anzahl_magnete=self.magnete)
         except Exception as fehler:
             self._fehler(str(fehler))
             return False
