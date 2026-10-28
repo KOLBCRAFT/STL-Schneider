@@ -323,3 +323,24 @@ def test_magnet_bleibt_magnet_wenn_duebel_fehlen():
     assert (n, m.magnete) == (1, 1)
     assert any("Nur Platz für 1 von 2 Dübeln und 1 von 1 Magneten" in z for z in zeilen)
     assert kern.montage_pruefen(teile, m) == []
+
+
+def test_automatik_ohne_splitter():
+    # Balken mit dünner Taille bei x=0..20 und einer schrägen Sprosse, deren Spitze über die Taille ragt:
+    # die dünnste Stelle würde nebenbei die Sprossenspitze abtrennen
+    links = trimesh.creation.box(bounds=[[-250, -15, -15], [0, 15, 15]])
+    taille = trimesh.creation.box(bounds=[[-1, -8, -8], [21, 8, 8]])
+    rechts = trimesh.creation.box(bounds=[[20, -15, -15], [250, 15, 15]])
+    balken = trimesh.boolean.union([links, taille, rechts], engine="manifold")
+    sprosse = trimesh.creation.cylinder(radius=5, segment=[[-60, 0, 10], [20, 0, 70]])
+    modell = trimesh.boolean.union([balken, sprosse], engine="manifold")
+    teile, _ = kern.auto_zerteile(modell, (320, 320, 320), rand=3.0)
+    assert len(teile) == 2
+    assert min(max(t.extents) for t in teile) > 80
+
+
+def test_automatik_gleichmaessige_stuecke():
+    balken = trimesh.creation.box(extents=[900, 30, 30])
+    teile, _ = kern.auto_zerteile(balken, (320, 320, 320), rand=3.0)
+    laengen = sorted(max(t.extents) for t in teile)
+    assert len(teile) == 3 and laengen[0] > 0.8 * 900 / 3
