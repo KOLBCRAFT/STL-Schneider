@@ -42,9 +42,11 @@ Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
   speichern …“ werden die Maße unter einem eigenen Namen gespeichert, mit „Profil löschen“ wieder
   entfernt. Die Profile liegen in `%APPDATA%\STL-Schneider\einstellungen.json` und bleiben beim
   Aktualisieren erhalten. Das zuletzt gewählte Profil ist beim nächsten Start wieder eingestellt.
-- **Automatisch**: Schneidet nur Teile, die nicht passen, und legt jeden Schnitt an die dünnste
-  Stelle im erlaubten Bereich. Probiert das Modell in Originallage und ausgerichtet und nimmt die
-  Variante mit weniger Teilen.
+- **Automatisch**: Schneidet nur Teile, die nicht passen. Muss ein Teil in mehrere Stücke, werden sie
+  etwa gleich lang geplant (keine kurzen Zwischenstücke); der Schnitt sucht in der Nähe die dünnste
+  Stelle. Schnitte, die nebenbei nur eine Sprossenspitze o.ä. abtrennen würden, werden vermieden; geht
+  es nicht anders, bleibt diese Stelle verbunden (steht im Protokoll). Probiert das Modell in
+  Originallage und ausgerichtet und nimmt die Variante mit weniger Teilen.
 - **Manuell**: Die rote Schnittebene im 3D-Fenster mit der Maus ziehen (Fläche = verschieben,
   Pfeil = kippen). Mit ⟂ X / ⟂ Y / ⟂ Z wird sie gerade ausgerichtet, mit dem Regler verschoben.
   „Schnitt hinzufügen“ merkt sich die Ebene, beliebig viele Schnitte sind möglich, auch schräge.

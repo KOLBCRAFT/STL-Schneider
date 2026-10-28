@@ -245,11 +245,12 @@ def _abstand_zu_strecken(punkte, strecken):
     return ergebnis
 
 
-def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, punkte=None, belegt=()):
+def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, punkte=None, belegt=(), auslassen=()):
     """Inseln des Querschnitts mit den geplanten Verbinder-Positionen.
 
     punkte: von Hand gesetzte Verbinder (3D). Sie ersetzen auf ihrer Insel die automatischen.
     belegt: schon gebohrte Löcher früherer Schnitte [(anfang, ende, radius)], neue Verbinder halten Abstand.
+    auslassen: Nummern von Inseln, die nicht geschnitten werden (dort bleibt das Modell verbunden).
     """
     origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
     normal = normal / np.linalg.norm(normal)
@@ -291,10 +292,10 @@ def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, pun
             tief.append(unary_union(list(schnitt.polygons_full)) if schnitt is not None else None)
 
     inseln = []
-    for flaeche in eben.polygons_full:
+    for nummer, flaeche in enumerate(eben.polygons_full):
         rand = zu_3d(np.asarray(flaeche.exterior.coords))
         innen = zu_3d([flaeche.representative_point().coords[0]])[0]
-        gewaehlt = fenster is None or fenster.enthaelt(rand)
+        gewaehlt = (fenster is None or fenster.enthaelt(rand)) and nummer not in auslassen
         insel = Insel(flaeche, rand, innen, gewaehlt, [])
         if gewaehlt and duebel and duebel.anzahl > 0:
             eigene = [p for p in eigene_2d if flaeche.contains(Point(p))]
@@ -310,7 +311,8 @@ def querschnitt(mesh, ebene, duebel: Duebel = None, fenster: Fenster = None, pun
     return inseln
 
 
-def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None, punkte=None, montage=None):
+def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = None, punkte=None, montage=None,
+             auslassen=()):
     """Schneidet das Mesh an einer beliebigen Ebene (punkt, normale) und schließt die Schnittflächen.
 
     Mit duebel werden Verbinder angebracht, mit fenster wird nur innerhalb des Fensters geschnitten,
@@ -323,7 +325,7 @@ def schneide(mesh, ebene, duebel: Duebel = None, log=None, fenster: Fenster = No
         montage.schnitt_durch_verbinder(mesh, origin, normal)
 
     alle = querschnitt(mesh, (origin, normal), duebel, fenster, punkte,
-                       montage.verbinder if montage is not None else ())
+                       montage.verbinder if montage is not None else (), auslassen)
     if not any(i.gewaehlt for i in alle):
         return [mesh], 0
     inseln = [(i.flaeche, i.innen, i.gewaehlt) for i in alle]
@@ -622,27 +624,94 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None, mon
         achse, nutzbar = int(reihenfolge[k]), platz[k]
         lo, hi = t.bounds[0][achse], t.bounds[1][achse]
         laenge = hi - lo
-        if laenge <= 2 * nutzbar:
-            # Beide Hälften sollen entlang der Achse passen
-            a, b = hi - nutzbar, lo + nutzbar
-        else:
-            # Ein passendes Stück abschneiden
-            a, b = lo + 0.5 * nutzbar, lo + nutzbar
+        # So viele Stücke wie nötig, gleich lang geplant. Der Schnitt sucht die dünnste Stelle in dem
+        # Bereich, in dem der Rest noch in (stuecke - 1) Stücke passt, bleibt aber nahe der Wunschlänge,
+        # damit keine kurzen Zwischenstücke entstehen.
+        stuecke = max(2, math.ceil(laenge / nutzbar))
+        a, b = hi - (stuecke - 1) * nutzbar, lo + nutzbar
         a, b = max(a, lo + 0.05 * laenge), min(b, hi - 0.05 * laenge)
+        ziel = min(max(lo + laenge / stuecke, a), b)
         kandidaten = np.linspace(a, b, proben)
         normal = ebene_achse(achse, 1.0)[1]
         flaechen = [s.area if s is not None else 0.0 for s in schnitt_2d(t, np.zeros(3), normal, kandidaten)]
-        # Leicht zur Mitte hin bevorzugen, damit bei gleicher Fläche ausgewogene Teile entstehen
-        mitte = (a + b) / 2
-        kosten = [f * (1 + 0.1 * abs(p - mitte) / max(b - a, 1e-6)) for f, p in zip(flaechen, kandidaten)]
-        pos = kandidaten[int(np.argmin(kosten))]
+        kosten = np.array([f * (1 + abs(p - ziel) / max(b - a, 1e-6)) for f, p in zip(flaechen, kandidaten)])
+        # Die besten Kandidaten genauer ansehen: Schnitte, die nebenbei kleine Splitter abtrennen
+        # (z.B. eine Sprossenspitze), werden teurer
+        grenze = 0.25 * min(bauraum)
+        for i in np.argsort(kosten)[:8]:
+            splitter = int(np.sum(_stueckgroessen(t, achse, kandidaten[i]) < grenze))
+            kosten[i] *= 1 + 20 * splitter
+        beste = int(np.argmin(kosten))
+        pos = kandidaten[beste]
         if log:
-            log(f"Schnitt {'XYZ'[achse]} bei {pos - mesh.bounds[0][achse]:.1f} mm (Fläche {min(flaechen):.0f} mm²)")
-        haelften, n = schneide(t, ebene_achse(achse, pos), duebel, log, montage=montage)
+            log(f"Schnitt {'XYZ'[achse]} bei {pos - mesh.bounds[0][achse]:.1f} mm (Fläche {flaechen[beste]:.0f} mm²)")
+        ebene = ebene_achse(achse, pos)
+        auslassen = _splitter_vermeiden(t, ebene, bauraum, achse)
+        if auslassen and log:
+            log(f"  {len(auslassen)} Stelle(n) nicht durchtrennt, sonst entstünden nur kleine Splitter")
+        haelften, n = schneide(t, ebene, duebel, log, montage=montage, auslassen=auslassen)
         zaehler += n
         for h in haelften:
             offen += [s for s in h.split(only_watertight=False) if len(s.faces) > 3]
     return fertig, zaehler
+
+
+def _stueckgroessen(teil, achse, pos):
+    """Größte Ausdehnung (mm) jedes Stücks, das ein achsparalleler Schnitt bei pos ergäbe.
+
+    Schnelle Abschätzung ohne echten Schnitt: Dreiecke werden nach Seite sortiert, die Ebene
+    trennt, was nur über sie verbunden ist.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    hoehe = teil.vertices[:, achse][teil.faces] - pos
+    seite = np.where((hoehe > 0).all(axis=1), 1, np.where((hoehe < 0).all(axis=1), -1, 0))
+    a, b = teil.face_adjacency.T
+    gleich = (seite[a] == seite[b]) & (seite[a] != 0)
+    n = len(teil.faces)
+    graph = coo_matrix((np.ones(gleich.sum()), (a[gleich], b[gleich])), shape=(n, n))
+    anzahl, nummer = connected_components(graph, directed=False)
+    gueltig = seite != 0
+    nummer, mitten = nummer[gueltig], teil.triangles_center[gueltig]
+    lo, hi = np.full((anzahl, 3), np.inf), np.full((anzahl, 3), -np.inf)
+    np.minimum.at(lo, nummer, mitten)
+    np.maximum.at(hi, nummer, mitten)
+    dreiecke = np.bincount(nummer, minlength=anzahl)
+    return (hi - lo).max(axis=1)[dreiecke > 3]
+
+
+def _splitter_vermeiden(teil, ebene, bauraum, achse):
+    """Inseln der Schnittfläche, die man besser nicht durchtrennt.
+
+    Geht eine Ebene durch einen dicken Ast, streift sie oft nebenbei eine Sprossenspitze. Die Spitze
+    würde ein winziges eigenes Teil (meist ohne Platz für Verbinder). Solche Inseln bleiben verbunden,
+    sofern der Schnitt das Teil trotzdem kürzer macht.
+    """
+    origin, normal = np.asarray(ebene[0], float), np.asarray(ebene[1], float)
+    inseln = querschnitt(teil, (origin, normal))
+    if len(inseln) < 2:
+        return []
+    stuecke = []
+    for seite in (-1, 1):
+        h = teil.slice_plane(origin, seite * normal, cap=True)
+        if h is not None and len(h.faces):
+            stuecke += [(seite, s) for s in h.split(only_watertight=False) if len(s.faces) > 3]
+    grenze = 0.25 * min(bauraum)
+    klein = [(seite, s) for seite, s in stuecke
+             if max(s.extents) < grenze and abs(s.volume) < 0.05 * abs(teil.volume)]
+    auslassen = set()
+    for seite, s in klein:
+        for nummer, insel in enumerate(inseln):
+            if s.contains([insel.innen + seite * normal * 0.05])[0]:
+                auslassen.add(nummer)
+    if not auslassen or len(auslassen) == len(inseln):
+        return []
+    # Nur wenn der Schnitt dann noch etwas bringt: kein Stück darf so lang bleiben wie das Teil
+    probe, _ = schneide(teil, ebene, auslassen=auslassen)
+    if any(p.extents[achse] >= teil.extents[achse] - 1.0 for p in probe):
+        return []
+    return sorted(auslassen)
 
 
 def ausrichten(mesh):
