@@ -344,3 +344,25 @@ def test_automatik_gleichmaessige_stuecke():
     teile, _ = kern.auto_zerteile(balken, (320, 320, 320), rand=3.0)
     laengen = sorted(max(t.extents) for t in teile)
     assert len(teile) == 3 and laengen[0] > 0.8 * 900 / 3
+
+
+def test_passt_schraeg_gelegt():
+    # 400 mm Stab passt gerade nicht auf 320x320, diagonal aber schon
+    stab = trimesh.creation.box(extents=[400, 20, 20])
+    assert not kern._passen_ausmasse(stab.extents, (320, 320, 320))
+    dreh = kern.drehung_zum_passen(stab, (320, 320, 320), rand=3.0)
+    assert dreh is not None and not np.allclose(dreh, np.eye(4))
+    gedreht = stab.copy()
+    gedreht.apply_transform(dreh)
+    assert kern._passen_ausmasse(gedreht.extents, (320, 320, 320), 3.0)
+    assert not kern.passt_irgendwie(trimesh.creation.box(extents=[600, 20, 20]), (320, 320, 320))
+
+
+def test_schnitt_quer_zum_ast():
+    # Schräger Ast (30° zur Z-Achse): die Ebene wird senkrecht zum Ast gekippt
+    ast = trimesh.creation.cylinder(radius=15, segment=[[0, 0, 0], [300 * np.sin(np.radians(30)), 0, 300 * np.cos(np.radians(30))]])
+    quer = kern._quer_zum_ast(ast, 2, 130.0)
+    assert quer is not None
+    richtung = quer[1]
+    winkel = np.degrees(np.arccos(abs(richtung @ [0, 0, 1])))
+    assert abs(winkel - 30) < 3
