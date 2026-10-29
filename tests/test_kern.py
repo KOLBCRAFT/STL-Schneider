@@ -366,3 +366,22 @@ def test_schnitt_quer_zum_ast():
     richtung = quer[1]
     winkel = np.degrees(np.arccos(abs(richtung @ [0, 0, 1])))
     assert abs(winkel - 30) < 3
+
+
+def test_schnittflaeche_bleibt_unten_auch_schraeg():
+    # Platte 380x60x20: die große Fläche nach unten, dann passt sie nur diagonal auf 320x320
+    platte = trimesh.creation.box(extents=[380, 60, 20])
+    m = kern.platte_lage(platte, (320, 320, 320))
+    gelegt = platte.copy()
+    gelegt.apply_transform(m)
+    assert gelegt.extents[2] == pytest.approx(20, abs=0.5)
+    assert gelegt.extents[0] <= 320 and gelegt.extents[1] <= 320
+
+
+def test_ueberstand_hinter_der_schnittebene():
+    haken = trimesh.boolean.union([trimesh.creation.box(bounds=[[0, 0, 0], [100, 20, 20]]),
+                                   trimesh.creation.box(bounds=[[0, 0, -30], [20, 20, 0]])], engine="manifold")
+    gerade = trimesh.creation.box(bounds=[[0, 0, 0], [100, 20, 20]])
+    oben = np.array([0, 0, 1.0])
+    assert kern._ueberstand(gerade, np.zeros(3), oben) == pytest.approx(0, abs=0.1)
+    assert kern._ueberstand(haken, np.zeros(3), oben) == pytest.approx(20, abs=0.1)
