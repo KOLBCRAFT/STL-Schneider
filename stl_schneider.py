@@ -586,8 +586,35 @@ def schnitt_2d(mesh, origin, normal, hoehen):
 
 
 def passt_irgendwie(teil, bauraum, rand=0.0):
-    """Passt das Teil in einer der sechs 90°-Lagen in den Bauraum?"""
-    return all(a <= b - 2 * rand for a, b in zip(sorted(teil.extents), sorted(bauraum)))
+    """Passt das Teil in den Bauraum, notfalls schräg gelegt (siehe drehung_zum_passen)?"""
+    return drehung_zum_passen(teil, bauraum, rand) is not None
+
+
+def _passen_ausmasse(ausmass, bauraum, rand=0.0):
+    return all(a <= b - 2 * rand for a, b in zip(sorted(ausmass), sorted(bauraum)))
+
+
+def drehung_zum_passen(teil, bauraum, rand=0.0, schritt=5.0):
+    """4x4-Drehung, mit der das Teil in den Bauraum passt, sonst None.
+
+    Erst die sechs 90°-Lagen (Einheitsmatrix), dann Drehungen um X, Y oder Z in 5°-Schritten.
+    Ein langes, gebogenes Teil passt oft schräg auf die Platte, wo es gerade zu lang wäre;
+    das spart Schnitte.
+    """
+    if _passen_ausmasse(teil.extents, bauraum, rand):
+        return np.eye(4)
+    punkte = teil.convex_hull.vertices if len(teil.vertices) > 100 else teil.vertices
+    punkte = punkte - punkte.mean(axis=0)
+    beste = None
+    for achse in np.eye(3):
+        for winkel in np.radians(np.arange(schritt, 180.0, schritt)):
+            dreh = trimesh.transformations.rotation_matrix(winkel, achse)
+            ausmass = np.ptp(punkte @ dreh[:3, :3].T, axis=0)
+            if _passen_ausmasse(ausmass, bauraum, rand):
+                reserve = min(b - a for a, b in zip(sorted(ausmass), sorted(bauraum)))
+                if beste is None or reserve > beste[0]:
+                    beste = (reserve, dreh)
+    return beste[1] if beste else None
 
 
 MAX_SCHNITTE = 500  # Notbremse für die Automatik, normale Modelle brauchen weit weniger
@@ -633,8 +660,13 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None, mon
         ziel = min(max(lo + laenge / stuecke, a), b)
         kandidaten = np.linspace(a, b, proben)
         normal = ebene_achse(achse, 1.0)[1]
-        flaechen = [s.area if s is not None else 0.0 for s in schnitt_2d(t, np.zeros(3), normal, kandidaten)]
-        kosten = np.array([f * (1 + abs(p - ziel) / max(b - a, 1e-6)) for f, p in zip(flaechen, kandidaten)])
+        schnitte_2d = schnitt_2d(t, np.zeros(3), normal, kandidaten)
+        flaechen = [s.area if s is not None else 0.0 for s in schnitte_2d]
+        # Jede weitere durchtrennte Stelle (z.B. eine zweite Sprosse) ist eine Klebestelle mehr und
+        # hinterlässt Aststücke an fremden Teilen: Ebenen durch nur einen Ast werden bevorzugt
+        inseln = [len(s.polygons_full) if s is not None else 0 for s in schnitte_2d]
+        kosten = np.array([f * (1 + abs(p - ziel) / max(b - a, 1e-6)) * (1 + 1.5 * max(m - 1, 0))
+                           for f, p, m in zip(flaechen, kandidaten, inseln)])
         # Die besten Kandidaten genauer ansehen: Schnitte, die nebenbei kleine Splitter abtrennen
         # (z.B. eine Sprossenspitze), werden teurer
         grenze = 0.25 * min(bauraum)
@@ -646,14 +678,64 @@ def auto_zerteile(mesh, bauraum, rand=3.0, duebel=None, proben=40, log=None, mon
         if log:
             log(f"Schnitt {'XYZ'[achse]} bei {pos - mesh.bounds[0][achse]:.1f} mm (Fläche {flaechen[beste]:.0f} mm²)")
         ebene = ebene_achse(achse, pos)
-        auslassen = _splitter_vermeiden(t, ebene, bauraum, achse)
-        if auslassen and log:
-            log(f"  {len(auslassen)} Stelle(n) nicht durchtrennt, sonst entstünden nur kleine Splitter")
-        haelften, n = schneide(t, ebene, duebel, log, montage=montage, auslassen=auslassen)
+        quer = _quer_zum_ast(t, achse, pos)
+        haelften = None
+        if quer is not None:
+            # Senkrecht zum Ast schneiden, nur durch diesen Ast
+            haelften, n = schneide(t, quer[:2], duebel, None, quer[2], montage=Montage())
+            # Kürzere Stücke, und jedes soll auf seiner Schnittfläche liegen können (nichts ragt
+            # hinter die Ebene, sonst müsste es anders herum auf die Platte)
+            if (len(haelften) < 2 or any(h.extents[achse] >= t.extents[achse] - 1.0 for h in haelften)
+                    or any(_ueberstand(h, *quer[:2]) > 1.0 for h in haelften)):
+                haelften = None
+            else:
+                winkel = np.degrees(np.arccos(min(1.0, abs(quer[1][achse]))))
+                if log:
+                    log(f"  quer zum Ast gekippt ({winkel:.0f}°)")
+                haelften, n = schneide(t, quer[:2], duebel, log, quer[2], montage=montage)
+        if haelften is None:
+            auslassen = _splitter_vermeiden(t, ebene, bauraum, achse)
+            if auslassen and log:
+                log(f"  {len(auslassen)} Stelle(n) nicht durchtrennt, sonst entstünden nur kleine Splitter")
+            haelften, n = schneide(t, ebene, duebel, log, montage=montage, auslassen=auslassen)
         zaehler += n
         for h in haelften:
             offen += [s for s in h.split(only_watertight=False) if len(s.faces) > 3]
     return fertig, zaehler
+
+
+def _ueberstand(teil, punkt, normal):
+    """Wie weit (mm) ragt das Teil hinter die Ebene, auf der seine Schnittfläche liegt?"""
+    hoehe = (teil.convex_hull.vertices - punkt) @ normal
+    return min(max(-hoehe.min(), 0.0), max(hoehe.max(), 0.0))
+
+
+def _quer_zum_ast(teil, achse, pos, schritt=8.0, max_winkel=50.0):
+    """Ebene senkrecht zum Ast an der Stelle pos: (punkt, normale, fenster) oder None.
+
+    Nur wenn die achsparallele Ebene genau einen Ast trifft. Die Richtung kommt aus den Schwerpunkten
+    der Querschnitte kurz davor und dahinter, das Fenster begrenzt den Schnitt auf diesen Ast.
+    """
+    normal = ebene_achse(achse, 1.0)[1]
+    schnitte = schnitt_2d(teil, np.zeros(3), normal, [pos - schritt, pos, pos + schritt])
+    if any(s is None for s in schnitte) or len(schnitte[1].polygons_full) != 1:
+        return None
+
+    def schwerpunkte(s):
+        nach_3d = s.metadata["to_3D"]
+        return [trimesh.transform_points([[*p.centroid.coords[0], 0.0]], nach_3d)[0] for p in s.polygons_full]
+
+    mitte = schwerpunkte(schnitte[1])[0]
+    davor = min(schwerpunkte(schnitte[0]), key=lambda q: np.linalg.norm(q - mitte))
+    dahinter = min(schwerpunkte(schnitte[2]), key=lambda q: np.linalg.norm(q - mitte))
+    richtung = dahinter - davor
+    richtung /= np.linalg.norm(richtung)
+    if np.degrees(np.arccos(min(1.0, abs(richtung @ normal)))) > max_winkel:
+        return None
+    flaeche = schnitte[1].polygons_full[0]
+    groesse = 2.5 * max(flaeche.bounds[2] - flaeche.bounds[0], flaeche.bounds[3] - flaeche.bounds[1])
+    u, v = ebenen_achsen(richtung)
+    return mitte, richtung, Fenster(mitte, u, v, groesse, groesse)
 
 
 def _stueckgroessen(teil, achse, pos):
@@ -785,8 +867,9 @@ def zerteile(mesh, ebenen, duebel=None, log=None, montage=None):
 def platte_lage(teil, bauraum=None):
     """4x4-Matrix, die das Teil druckfertig auf die Platte legt (Ecke im Ursprung).
 
-    Bevorzugt die größte ebene Fläche (meist die Schnittfläche) nach unten. Passt das Teil so
-    nicht in den Bauraum, wird die nächstkleinere ebene Fläche bzw. eine 90°-Lage genommen.
+    Bevorzugt die größte ebene Fläche (meist die Schnittfläche) nach unten, notfalls flach auf der
+    Platte gedreht (auch schräg). Passt das Teil so nicht in den Bauraum, wird die nächstkleinere
+    ebene Fläche bzw. eine 90°-Lage genommen.
     """
     lagen = []
     if len(teil.facets):
@@ -805,6 +888,11 @@ def platte_lage(teil, bauraum=None):
         pts = trimesh.transform_points(hull, m)
         return trimesh.transformations.translation_matrix(-pts.min(axis=0)) @ m
 
+    if bauraum is not None and not _passen_ausmasse(teil.extents, bauraum):
+        # Notlösung, wenn keine Lage flach gedreht passt: schräg im Raum (siehe drehung_zum_passen)
+        dreh = drehung_zum_passen(teil, bauraum)
+        if dreh is not None:
+            lagen += [lage @ dreh for lage in lagen[-6:]]
     erstes = None
     for rot in lagen:
         m = auf_ecke(rot)
@@ -812,12 +900,14 @@ def platte_lage(teil, bauraum=None):
             erstes = m
         if bauraum is None:
             return m
-        ausmass = np.ptp(trimesh.transform_points(hull, m), axis=0)
-        x, y, z = ausmass
-        if z <= bauraum[2] and ((x <= bauraum[0] and y <= bauraum[1]) or (y <= bauraum[0] and x <= bauraum[1])):
-            if x > bauraum[0] or y > bauraum[1]:
-                m = auf_ecke(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1]) @ m)
-            return m
+        # Liegt die Fläche unten, aber die Grundfläche ist zu lang: flach auf der Platte drehen
+        for winkel in np.radians(np.arange(0.0, 180.0, 5.0)):
+            gedreht = auf_ecke(trimesh.transformations.rotation_matrix(winkel, [0, 0, 1]) @ m)
+            x, y, z = np.ptp(trimesh.transform_points(hull, gedreht), axis=0)
+            if z > bauraum[2]:
+                break
+            if x <= bauraum[0] and y <= bauraum[1]:
+                return gedreht
     return erstes
 
 

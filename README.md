@@ -45,8 +45,12 @@ Pfad zu Bambu Studio. Alles wird sofort übernommen und gemerkt.
 - **Automatisch**: Schneidet nur Teile, die nicht passen. Muss ein Teil in mehrere Stücke, werden sie
   etwa gleich lang geplant (keine kurzen Zwischenstücke); der Schnitt sucht in der Nähe die dünnste
   Stelle. Schnitte, die nebenbei nur eine Sprossenspitze o.ä. abtrennen würden, werden vermieden; geht
-  es nicht anders, bleibt diese Stelle verbunden (steht im Protokoll). Probiert das Modell in
-  Originallage und ausgerichtet und nimmt die Variante mit weniger Teilen.
+  es nicht anders, bleibt diese Stelle verbunden (steht im Protokoll). Bevorzugt werden Stellen, an
+  denen der Schnitt nur durch einen Ast geht; die Ebene wird dann quer zum Ast gekippt, damit keine
+  schrägen Schnittflächen und keine losen Zinkenstücke entstehen, aber nur, wenn danach jedes Stück
+  auf seiner Schnittfläche liegen kann. Ein Teil, das nur schräg auf die Platte passt, wird nicht
+  weiter geschnitten; beim Export liegt es mit der Schnittfläche unten, flach gedreht. Probiert
+  das Modell in Originallage und ausgerichtet und nimmt die Variante mit weniger Teilen.
 - **Manuell**: Die rote Schnittebene im 3D-Fenster mit der Maus ziehen (Fläche = verschieben,
   Pfeil = kippen). Mit ⟂ X / ⟂ Y / ⟂ Z wird sie gerade ausgerichtet, mit dem Regler verschoben.
   „Schnitt hinzufügen“ merkt sich die Ebene, beliebig viele Schnitte sind möglich, auch schräge.
